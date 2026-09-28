@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http.cookies import SimpleCookie
 from urllib.parse import urlparse, parse_qs, quote
 from ui import e, icon, layout, bare, badge, bar, ago, human
+from guide import guide_body
 
 DATA = os.environ.get("DATA_DIR", "/data")
 TFTP = os.environ.get("TFTP_DIR", "/srv/tftp")
@@ -308,7 +309,7 @@ def p_status(sid, q):
     if ndone < len(steps):
         li = "".join(f'<li class="{"done" if ok else ""}"><span class="dot">{icon("check", 13) if ok else ""}</span><div><div class="t">{t}</div>'
                      f'<div class="d">{d}</div>{"" if ok or not act else f"<div style=margin-top:6px>{act}</div>"}</div></li>' for t, d, ok, act in steps)
-        check = f'<div class="card"><h2>Get started &middot; {ndone} of {len(steps)}</h2><div class="meter"><i style="width:{ndone*100//len(steps)}%"></i></div><ul class="steps">{li}</ul></div>'
+        check = f'<div class="card"><h2>Get started &middot; {ndone} of {len(steps)}</h2><p class="hint" style="margin:-6px 0 10px">New here? Open the <a href="/guide"><b>Guide</b></a> for step-by-step help.</p><div class="meter"><i style="width:{ndone*100//len(steps)}%"></i></div><ul class="steps">{li}</ul></div>'
     warn = "" if up else f'<div class="banner err">{icon("alert")}dnsmasq is not running, so rigs cannot PXE boot. Check the log below.</div>'
     rows = ""
     for m, r in cfg["rigs"].items():
@@ -463,6 +464,14 @@ def login_page(msg=""):
 <p class="hint" style="text-align:center">First time? Use the password shown for this app in Umbrel.</p>""")
 
 
+def p_guide(sid, q):
+    ip, iface = detect_net(); ip = server_ip()
+    has_farm = any(g["farm_hash"] for g in cfg["groups"].values()); seen = any(r.get("seen_ts") for r in cfg["rigs"].values())
+    flags = [bool(cfg.get("ack_static_ip")), bool(cfg["image"]), has_farm, bool(cfg["rigs"]), seen, any(r.get("state") == "done" for r in cfg["rigs"].values())]
+    return L(sid, "Guide", guide_body(ip, iface, dnsmasq_up(), cfg["image"], has_farm, len(cfg["rigs"]), seen, flags[0], sum(flags)),
+             "guide", q, sub="Step-by-step help. No technical knowledge needed.")
+
+
 # ---------- handlers ----------
 class Base(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -540,7 +549,7 @@ class Admin(Base):
         sid = self.session()
         if not sid: return self.go("/login")
         if not cfg["password_changed"] and p != "/password": return self.go("/password")
-        routes = {"/": p_status, "/rigs": p_rigs, "/groups": p_groups, "/images": p_images, "/settings": p_settings, "/password": p_password}
+        routes = {"/": p_status, "/rigs": p_rigs, "/groups": p_groups, "/images": p_images, "/settings": p_settings, "/password": p_password, "/guide": p_guide}
         if p == "/api/status":
             return self.send(200, json.dumps({"dnsmasq": dnsmasq_up(), "rigs": cfg["rigs"], "image": cfg["image"]}).encode(), "application/json")
         if p == "/settings/export":
@@ -604,7 +613,7 @@ class Admin(Base):
             if err: return self.send(200, p_password(sid, None, ("err", err)))
             cfg["password"] = hash_pw(f["new"]); cfg["password_changed"] = True; save(cfg)
             for s in [s for s in sessions if s != sid]: sessions.pop(s)
-            return self.go("/", "ok", "Password changed")
+            return self.go("/guide" if not (cfg["image"] or cfg["rigs"]) else "/", "ok", "Password changed. Start here to set everything up.")
         if not cfg["password_changed"]: return self.go("/password")
         with lock:
             if p == "/ack": cfg["ack_static_ip"] = True; save(cfg); return self.go("/")

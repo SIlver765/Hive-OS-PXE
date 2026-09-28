@@ -21,6 +21,7 @@ ICONS = {  # 24x24 stroke icons (lucide-style)
     "plus": '<path d="M12 5v14M5 12h14"/>',
     "upload": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>',
     "download": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
+    "guide": '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5v14Z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5M9 8h7M9 12h5"/>',
     "server": '<rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><path d="M6 6h.01M6 18h.01"/>',
 }
 
@@ -144,7 +145,7 @@ JS = """
 FAVICON = ("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23f5a623'/%3E"
            "%3Ctext x='16' y='21' font-family='sans-serif' font-size='12' font-weight='700' text-anchor='middle' fill='%231a1200'%3EPXE%3C/text%3E%3C/svg%3E")
 
-NAV = [("/", "status", "Dashboard"), ("/rigs", "rigs", "Rigs"), ("/groups", "groups", "Groups"),
+NAV = [("/", "status", "Dashboard"), ("/guide", "guide", "Guide"), ("/rigs", "rigs", "Rigs"), ("/groups", "groups", "Groups"),
        ("/images", "image", "Image"), ("/settings", "settings", "Settings")]
 
 def head(title):
@@ -194,3 +195,17 @@ def human(n):
     for u in ("B", "KB", "MB", "GB"):
         if n < 1024 or u == "GB": return f"{n:.0f} {u}" if u == "B" else f"{n:.1f} {u}"
         n /= 1024
+
+CSS += """
+.gd{padding:0}.gd summary{list-style:none;display:flex;align-items:center;padding:16px 20px;font-weight:650;font-size:15.5px;cursor:pointer;color:var(--fg)}
+.gd summary::-webkit-details-marker{display:none}.gd summary::after{content:"";margin-left:auto;width:8px;height:8px;border-right:2px solid var(--mut);border-bottom:2px solid var(--mut);transform:rotate(45deg);transition:transform .2s}
+.gd[open] summary::after{transform:rotate(-135deg)}
+.gb{padding:0 20px 18px 56px;line-height:1.6}.gb p,.gb ol,.gb ul{margin:.6em 0}.gb li{margin:.35em 0}
+.num{display:inline-grid;place-items:center;width:28px;height:28px;border-radius:50%;background:var(--ac);color:var(--acfg);font-weight:700;font-size:13.5px;margin-right:14px;flex:none}
+.num.ok{background:var(--ok);color:#fff}
+.tip{background:var(--infbg);border-left:4px solid var(--inf);padding:10px 14px;border-radius:8px;margin:12px 0;font-size:14px}
+.tip.warn{background:var(--warnbg);border-left-color:var(--warn)}
+.gq{border-top:1px solid var(--bd);margin:0}.gq:first-of-type{border:0}.gq summary{padding:12px 0;cursor:pointer;font-weight:600}.gq .gb{padding:0 0 12px 0}
+.gl dt{font-weight:650;margin-top:10px}.gl dd{margin:2px 0 0;color:var(--mut)}
+@media(max-width:820px){.gb{padding-left:20px}}
+"""

@@ -15,7 +15,7 @@ tests/                        test-umbrel.sh (run on Umbrel), pxe-probe.py (run 
 ```
 
 ## Admin UI
-Dashboard (live server/rig status, per-rig flash progress, setup checklist), Rigs (add, import, edit, reflash, filter), Groups,
+Guide (plain-language step-by-step help with live progress and troubleshooting; opens after first login), Dashboard (live server/rig status, per-rig flash progress, setup checklist), Rigs (add, import, edit, reflash, filter), Groups,
 Image (download by link or drag-and-drop upload), Settings (IP override, port status, dnsmasq restart, config export).
 Login uses the Umbrel-shown password and forces a change on first use. All input is validated because values land in
 `rig.conf` / `flash.env`, which are sourced as shell. Pages refresh themselves every 3 s; works on phones, light and dark.
