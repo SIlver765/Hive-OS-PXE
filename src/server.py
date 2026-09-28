@@ -6,7 +6,7 @@ Stdlib only. Two listeners:
   PUBLIC_PORT (8382) unauthenticated, LAN-facing: iPXE script, netboot files, image, per-rig config
 """
 import hashlib, hmac, html, io, json, os, re, secrets, shutil, socket, subprocess, tarfile
-import threading, time, urllib.request
+import threading, time, urllib.request, tempfile
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http.cookies import SimpleCookie
@@ -117,8 +117,9 @@ pxe-service=tag:ipxe,X86-64_EFI,"Hive OS Deploy",boot.ipxe
     os.makedirs(TFTP, exist_ok=True)
     with open(os.path.join(TFTP, "boot.ipxe"), "w") as f:  # tiny stub: hand over to the dynamic HTTP script
         f.write(f"#!ipxe\nchain http://{ip}:{PUBLIC_PORT}/boot.ipxe?mac=${{net0/mac}} || exit\n")
-    with open("/tmp/dnsmasq.conf", "w") as f: f.write(conf)
-    return "/tmp/dnsmasq.conf"
+    path = os.path.join(tempfile.gettempdir(), "dnsmasq.conf")
+    with open(path, "w") as f: f.write(conf)
+    return path
 
 def run_dnsmasq():
     global dnsmasq_proc
