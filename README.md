@@ -9,10 +9,16 @@ umbrel-app-store.yml          store id "HiveOSPXE"
 HiveOSPXE-hive-os-pxe/               app dir = <store-id>-<app-name>
   umbrel-app.yml              manifest (UI port 8380)
   docker-compose.yml          host networking, image ref
-src/                          image source (Dockerfile, server.py, scripts/flash.sh, dnsmasq.reference.conf)
+src/                          image source (Dockerfile, server.py, ui.py, scripts/flash.sh, dnsmasq.reference.conf)
 tests/                        test-umbrel.sh (run on Umbrel), pxe-probe.py (run on a LAN machine)
 .github/workflows/build.yml   builds amd64+arm64 image to ghcr.io on tag v*
 ```
+
+## Admin UI
+Dashboard (live server/rig status, per-rig flash progress, setup checklist), Rigs (add, import, edit, reflash, filter), Groups,
+Image (download by link or drag-and-drop upload), Settings (IP override, port status, dnsmasq restart, config export).
+Login uses the Umbrel-shown password and forces a change on first use. All input is validated because values land in
+`rig.conf` / `flash.env`, which are sourced as shell. Pages refresh themselves every 3 s; works on phones, light and dark.
 
 ## Ports
 | Port | Proto | Purpose |

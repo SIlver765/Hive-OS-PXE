@@ -56,7 +56,7 @@ case $IMAGE in
   *.zst) apk add -q zstd >/dev/null 2>&1; DEC="zstd -dc" ;;
   *)     DEC="cat" ;;
 esac
-( set -o pipefail; wget -q -O- "$SRV/image/$IMAGE" | $DEC | dd of="$TARGET_DISK" bs=4M conv=fsync 2>/dev/null ) \
+( set -o pipefail; wget -q -O- "$SRV/image/$IMAGE?mac=$MAC" | $DEC | dd of="$TARGET_DISK" bs=4M conv=fsync 2>/dev/null ) \
   || fail "image write failed (download or decompress error)"
 sync
 

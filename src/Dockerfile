@@ -8,8 +8,9 @@ RUN apk add --no-cache python3 dnsmasq curl iproute2 \
       curl -fsSL -o /srv/netboot/$f https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/netboot-${ALPINE_NETBOOT}/$f; done \
  && apk del curl
 WORKDIR /app
-COPY server.py /app/
+COPY server.py ui.py /app/
 COPY scripts /app/scripts
 ENV DATA_DIR=/data ALPINE_BRANCH=v3.20
 EXPOSE 8381 8382
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD wget -q -O /dev/null http://127.0.0.1:8382/api/ping || exit 1
 CMD ["python3", "/app/server.py"]

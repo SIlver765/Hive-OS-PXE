@@ -6,11 +6,12 @@ Stdlib only. Two listeners:
   PUBLIC_PORT (8382) unauthenticated, LAN-facing: iPXE script, netboot files, image, per-rig config
 """
 import hashlib, hmac, html, io, json, os, re, secrets, shutil, socket, subprocess, tarfile
-import threading, time, urllib.request, tempfile
+import ipaddress, threading, time, urllib.request, tempfile
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http.cookies import SimpleCookie
 from urllib.parse import urlparse, parse_qs, quote
+from ui import e, icon, layout, bare, badge, bar, ago, human
 
 DATA = os.environ.get("DATA_DIR", "/data")
 TFTP = os.environ.get("TFTP_DIR", "/srv/tftp")
@@ -25,7 +26,7 @@ MAC_RE = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")
 
 lock = threading.RLock()
 log_lines = deque(maxlen=200)      # dnsmasq output
-events = deque(maxlen=100)         # rig-side reports
+events = deque(maxlen=100)         # (epoch, text) rig-side reports
 fetches = {}                       # image download progress
 sessions = {}                      # sid -> csrf
 dnsmasq_proc = None
@@ -195,123 +196,271 @@ def flash_env(rig):
     return f'IMAGE="{cfg["image"]}"\nTARGET_DISK="{g.get("disk", "")}"\n'
 
 
-# ---------- HTML helpers ----------
-CSS = """:root{color-scheme:light dark;--bg:#fff;--fg:#1a1a1a;--mut:#666;--bd:#ddd;--ac:#2563eb;--ok:#15803d;--bad:#b91c1c}
-@media(prefers-color-scheme:dark){:root{--bg:#141414;--fg:#e8e8e8;--mut:#999;--bd:#333;--ac:#60a5fa;--ok:#4ade80;--bad:#f87171}}
-body{font:15px system-ui,sans-serif;background:var(--bg);color:var(--fg);margin:0}main{max-width:960px;margin:0 auto;padding:16px}
-nav a{margin-right:14px;color:var(--ac);text-decoration:none}h1{font-size:20px}h2{font-size:16px;margin-top:28px}
-table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid var(--bd);padding:6px 8px;text-align:left;font-size:14px}
-input,select,button,textarea{font:inherit;padding:6px 8px;background:transparent;color:inherit;border:1px solid var(--bd);border-radius:6px;max-width:100%}
-button{cursor:pointer;background:var(--ac);color:#fff;border-color:var(--ac)}button.g{background:transparent;color:var(--fg);border-color:var(--bd)}
-.ok{color:var(--ok)}.bad{color:var(--bad)}.mut{color:var(--mut)}pre{background:#0002;padding:8px;border-radius:6px;overflow:auto;max-height:260px;font-size:12px}
-form.row{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin:8px 0}form.row label{display:flex;flex-direction:column;font-size:12px;color:var(--mut);gap:2px}
-form.inl{display:inline}.card{border:1px solid var(--bd);border-radius:8px;padding:8px 12px;margin:8px 0}"""
+# ---------- validation ----------
+NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,40}$")
+IMG_EXT = (".img", ".img.xz", ".img.gz", ".img.zst")
 
-def e(s): return html.escape(str(s), quote=True)
+def valid_ip(s):
+    try: ipaddress.IPv4Address(s); return True
+    except ValueError: return False
 
-def page(title, body, sid=None):
-    nav = ""
-    if sid:
-        nav = ('<nav><a href="/">Status</a><a href="/rigs">Rigs</a><a href="/groups">Groups</a><a href="/images">Image</a>'
-               '<a href="/settings">Settings</a><a href="/password">Password</a>'
-               f'<form class="inl" method="post" action="/logout"><input type="hidden" name="csrf" value="{sessions[sid]}">'
-               '<button class="g">Log out</button></form></nav>')
-    return (f'<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">'
-            f'<title>{e(title)} - Hive PXE Deploy</title><style>{CSS}</style><main>{nav}<h1>{e(title)}</h1>{body}</main>').encode()
+def valid_net(s):
+    try: ipaddress.IPv4Network(s, strict=False); return True
+    except ValueError: return False
 
-def csrf(sid): return f'<input type="hidden" name="csrf" value="{sessions[sid]}">'
+def check_group(f):
+    """Validate and normalise group form fields. Values end up in files that Hive OS / the flasher source as shell."""
+    g = {k: (f.get(k) or "").strip() for k in ("network", "gateway", "dns", "hive_url", "farm_hash", "disk")}
+    if not valid_net(g["network"]) or "/" not in g["network"]: return None, "Network must be CIDR, e.g. 192.168.1.0/24"
+    if not valid_ip(g["gateway"]): return None, "Gateway must be an IPv4 address"
+    if g["dns"] and not valid_ip(g["dns"]): return None, "DNS must be an IPv4 address or blank"
+    if not re.match(r"^https?://[A-Za-z0-9._:/-]+$", g["hive_url"]): return None, "Hive API URL must look like https://api2.hiveos.farm"
+    if not re.match(r"^[A-Za-z0-9]*$", g["farm_hash"]): return None, "Farm hash may only contain letters and digits"
+    if not re.match(r"^(/dev/[a-z0-9]+)?$", g["disk"]): return None, "Target disk must look like /dev/sda or be blank"
+    return g, None
+
+def check_rig(name, mac, ip, group, current=None):
+    name = (name or "").strip(); mac = norm_mac(mac); ip = (ip or "").strip()
+    if not NAME_RE.match(name): return None, "Name may use letters, digits, . _ - (max 40)"
+    if not mac: return None, "MAC address is not valid"
+    if group not in cfg["groups"]: return None, "Unknown group"
+    if ip:
+        if not valid_ip(ip): return None, f"{ip} is not a valid IPv4 address"
+        if ipaddress.IPv4Address(ip) not in ipaddress.IPv4Network(cfg["groups"][group]["network"], strict=False):
+            return None, f"{ip} is outside the {group} network ({cfg['groups'][group]['network']})"
+        for m, r in cfg["rigs"].items():
+            if m != (current or mac) and r.get("ip") == ip: return None, f"{ip} is already used by {r['name']}"
+    for m, r in cfg["rigs"].items():
+        if m != (current or mac) and r["name"] == name: return None, f"Name {name} is already used"
+    return {"name": name, "mac": mac, "ip": ip, "group": group}, None
+
+def safe_image_name(n):
+    n = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(n or ""))
+    return n if n.endswith(IMG_EXT) and len(n) < 120 else None
+
+def image_files():
+    return sorted(f for f in os.listdir(IMAGES) if not f.endswith(".part"))
+
+def image_size(name):
+    try: return os.path.getsize(os.path.join(IMAGES, name))
+    except OSError: return 0
+
+def dnsmasq_up(): return dnsmasq_proc is not None and dnsmasq_proc.poll() is None
+
+def tcp_ok(port):
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=1): return True
+    except OSError: return False
+
+
+# ---------- image download ----------
+def fetch_image(url):
+    name = safe_image_name(urlparse(url).path)
+    if not name: return
+    dst = os.path.join(IMAGES, name)
+    st = fetches[name] = {"status": "downloading", "done": 0, "total": 0, "err": ""}
+    try:
+        with urllib.request.urlopen(url, timeout=30) as r, open(dst + ".part", "wb") as f:
+            st["total"] = int(r.headers.get("Content-Length", 0))
+            if st["total"] and st["total"] > shutil.disk_usage(IMAGES).free: raise OSError("not enough free disk space")
+            while chunk := r.read(1 << 20):
+                f.write(chunk); st["done"] += len(chunk)
+        os.replace(dst + ".part", dst)
+        st["status"] = "done"
+        with lock:
+            if not cfg["image"]: cfg["image"] = name; save(cfg)
+    except Exception as ex:
+        st.update(status="failed", err=str(ex))
+        try: os.remove(dst + ".part")
+        except OSError: pass
 
 
 # ---------- admin pages ----------
+def L(sid, title, body, active, q=None, **kw):
+    msg = (q["k"][0], q["m"][0]) if q and "m" in q and "k" in q else None
+    return layout(title, body, sessions[sid], active, msg=msg, **kw)
+
+def csrf(sid): return f'<input type="hidden" name="csrf" value="{sessions[sid]}">'
+
+def counts():
+    c = {"pending": 0, "flashing": 0, "done": 0, "failed": 0, "skip": 0}
+    for r in cfg["rigs"].values(): c[r.get("state", "pending")] = c.get(r.get("state", "pending"), 0) + 1
+    return c
+
+def rig_progress_cell(r):
+    return bar(r.get("progress", 0)) if r.get("state") == "flashing" else ""
+
 def p_status(sid, q):
     ip, iface = detect_net(); ip = server_ip()
-    up = dnsmasq_proc is not None and dnsmasq_proc.poll() is None
-    rows = "".join(
-        f'<tr><td>{e(r["name"])}</td><td>{e(m)}</td><td>{e(r.get("ip") or "-")}</td>'
-        f'<td class="{"ok" if r.get("state")=="done" else "bad" if r.get("state")=="failed" else ""}">{e(r.get("state","pending"))}</td>'
-        f'<td class="mut">{e(r.get("seen","-"))}</td></tr>' for m, r in cfg["rigs"].items())
-    img = e(cfg["image"]) if cfg["image"] else '<span class="bad">none selected</span>'
-    ev = "\n".join(list(events)[-15:][::-1]) or "no reports yet"
-    lg = "\n".join(list(log_lines)[-40:][::-1]) or "no dnsmasq output yet"
-    return page("Status", f"""<div class=card>Server IP <b>{e(ip)}</b> on <b>{e(iface or '?')}</b> &middot; proxy-DHCP/TFTP (dnsmasq):
-<b class="{'ok' if up else 'bad'}">{'running' if up else 'stopped'}</b> &middot; image: <b>{img}</b> &middot; rig files: <code>http://{e(ip)}:{PUBLIC_PORT}</code></div>
-<p class=mut>Reminder: give this machine a static IP or DHCP reservation, or rigs will PXE to a stale address.</p>
-<h2>Rigs</h2><table><tr><th>Name<th>MAC<th>IP<th>State<th>Last seen</tr>{rows or '<tr><td colspan=5 class=mut>No rigs yet</tr>'}</table>
-<h2>Rig reports</h2><pre>{e(ev)}</pre><h2>dnsmasq log (newest first)</h2><pre>{e(lg)}</pre>""", sid)
+    up = dnsmasq_up(); c = counts(); total = len(cfg["rigs"])
+    img = cfg["image"]
+    steps = [
+        ("Reserve an IP for this server", "Set a DHCP reservation (or static IP) on your router so rigs never PXE to a stale address.",
+         cfg.get("ack_static_ip"), f'<form class="inl" method="post" action="/ack">{csrf(sid)}<button class="g">I\'ve done this</button></form>'),
+        ("Choose a Hive OS image", "Paste a download link or upload the .img.xz.", bool(img), '<a href="/images">Open Image</a>'),
+        ("Set your farm hash", "Rigs auto-register in your Hive account with it.", any(g["farm_hash"] for g in cfg["groups"].values()), '<a href="/groups">Open Groups</a>'),
+        ("Add your rigs", "Name, MAC and an optional static IP for each.", total > 0, '<a href="/rigs">Open Rigs</a>'),
+        ("Network-boot a rig", "Set the rig's BIOS to boot from network (PXE). It shows up here within seconds.",
+         any(r.get("seen_ts") for r in cfg["rigs"].values()), ""),
+    ]
+    ndone = sum(1 for s in steps if s[2])
+    check = ""
+    if ndone < len(steps):
+        li = "".join(f'<li class="{"done" if ok else ""}"><span class="dot">{icon("check", 13) if ok else ""}</span><div><div class="t">{t}</div>'
+                     f'<div class="d">{d}</div>{"" if ok or not act else f"<div style=margin-top:6px>{act}</div>"}</div></li>' for t, d, ok, act in steps)
+        check = f'<div class="card"><h2>Get started &middot; {ndone} of {len(steps)}</h2><div class="meter"><i style="width:{ndone*100//len(steps)}%"></i></div><ul class="steps">{li}</ul></div>'
+    warn = "" if up else f'<div class="banner err">{icon("alert")}dnsmasq is not running, so rigs cannot PXE boot. Check the log below.</div>'
+    rows = ""
+    for m, r in cfg["rigs"].items():
+        rows += (f'<tr><td><b>{e(r["name"])}</b></td><td class="mono">{e(m)}</td><td>{e(r.get("ip") or "DHCP")}</td><td>{e(r.get("group"))}</td>'
+                 f'<td>{badge(r.get("state", "pending"))}{rig_progress_cell(r)}</td><td class="mut">{ago(r.get("seen_ts"))}</td></tr>')
+    table = (f'<div class="tw"><table class="rt"><thead><tr><th>Rig<th>MAC<th>IP<th>Group<th>State<th>Last seen</tr></thead><tbody>{rows}</tbody></table></div>'
+             if rows else f'<div class="empty">No rigs yet. <a href="/rigs">Add your first rig</a></div>')
+    feed = "".join(f'<li><time>{time.strftime("%H:%M:%S", time.localtime(t))}</time><span>{e(x)}</span></li>' for t, x in list(events)[-12:][::-1]) \
+        or '<li class="mut">Nothing yet. Reports appear when a rig boots or flashes.</li>'
+    lg = "\n".join(list(log_lines)[-60:][::-1]) or "no output yet"
+    body = f"""<div id="live">{warn}
+<div class="grid">
+ <div class="card stat"><div class="k">{icon("server", 15)} Deploy server</div><div class="v">{badge("done" if up else "failed").replace("Deployed", "Running").replace("Failed", "Stopped")}</div>
+  <div class="s"><span class="mono">{e(ip)}</span> on {e(iface or "?")} <button class="copy" data-copy="{e(ip)}" title="Copy">{icon("copy", 14)}</button></div></div>
+ <div class="card stat"><div class="k">{icon("image", 15)} Image</div><div class="v">{e(img) if img else "None selected"}</div>
+  <div class="s">{human(image_size(img)) if img else '<a href="/images">Choose an image</a>'}</div></div>
+ <div class="card stat"><div class="k">{icon("rigs", 15)} Rigs</div><div class="v">{total}</div>
+  <div class="s">{c["done"]} deployed &middot; {c["flashing"]} flashing &middot; {c["pending"]} pending{f' &middot; <span style=color:var(--bad)>{c["failed"]} failed</span>' if c["failed"] else ""}</div></div>
+</div>{check}
+<div class="card"><h2>Rigs</h2>{table}</div>
+<div class="card"><h2>Activity</h2><ul class="feed">{feed}</ul>
+<details><summary>dnsmasq log</summary><pre>{e(lg)}</pre></details></div></div>"""
+    return L(sid, "Dashboard", body, "status", q, sub="Live view of your deploy server and rigs")
 
 def p_rigs(sid, q):
     gopts = "".join(f'<option>{e(g)}</option>' for g in cfg["groups"])
     rows = ""
     for m, r in cfg["rigs"].items():
-        c = csrf(sid); mm = quote(m)
-        rows += (f'<tr><td>{e(r["name"])}<td>{e(m)}<td>{e(r.get("ip") or "-")}<td>{e(r.get("group"))}<td>{e(r.get("state","pending"))}'
-                 f'<td><form class=inl method=post action="/rigs/{mm}/reflash">{c}<button class=g>Reflash</button></form> '
-                 f'<form class=inl method=post action="/rigs/{mm}/skip">{c}<button class=g>Mark done</button></form> '
-                 f'<form class=inl method=post action="/rigs/{mm}/delete">{c}<button class=g>Delete</button></form></tr>')
-    return page("Rigs", f"""<table><tr><th>Name<th>MAC<th>IP<th>Group<th>State<th></tr>{rows or '<tr><td colspan=6 class=mut>None</tr>'}</table>
-<h2>Add rig</h2><form class=row method=post action=/rigs/add>{csrf(sid)}
-<label>Name<input name=name required></label><label>MAC<input name=mac required placeholder="aa:bb:cc:dd:ee:ff"></label>
-<label>IP (optional)<input name=ip placeholder="192.168.1.51"></label><label>Group<select name=group>{gopts}</select></label><button>Add</button></form>
-<h2>Import list</h2><p class=mut>One rig per line: <code>name MAC [IP] [group]</code> (space, comma or tab separated)</p>
-<form method=post action=/rigs/import>{csrf(sid)}<textarea name=list rows=6 style="width:100%"></textarea><br><button>Import</button></form>
-<p class=mut>A rig is flashed on its next PXE boot until it reports success; after that it boots from its own disk. "Reflash" re-arms it.</p>""", sid)
+        c = csrf(sid); mm = quote(m, safe="")
+        rows += (f'<tr><td><b>{e(r["name"])}</b></td><td class="mono">{e(m)}</td><td>{e(r.get("ip") or "DHCP")}</td><td>{e(r.get("group"))}</td>'
+                 f'<td>{badge(r.get("state", "pending"))}{rig_progress_cell(r)}</td><td class="mut">{ago(r.get("seen_ts"))}</td>'
+                 f'<td class="r"><a class="btn g ic" href="/rigs/{mm}/edit" title="Edit" aria-label="Edit">{icon("edit", 15)}</a> '
+                 f'<form class="inl" method="post" action="/rigs/{mm}/reflash" data-confirm="Reflash {e(r["name"])} on its next network boot? Its disk will be overwritten.">{c}<button class="g ic" title="Reflash" aria-label="Reflash">{icon("refresh", 15)}</button></form> '
+                 f'<form class="inl" method="post" action="/rigs/{mm}/skip">{c}<button class="g ic" title="Mark as deployed" aria-label="Mark deployed">{icon("skip", 15)}</button></form> '
+                 f'<form class="inl" method="post" action="/rigs/{mm}/delete" data-confirm="Delete {e(r["name"])}?">{c}<button class="d ic" title="Delete" aria-label="Delete">{icon("trash", 15)}</button></form></td></tr>')
+    table = (f'<div class="tw"><table class="rt"><thead><tr><th>Name<th>MAC<th>IP<th>Group<th>State<th>Seen<th></tr></thead><tbody>{rows}</tbody></table></div>'
+             if rows else '<div class="empty">No rigs yet. Add one below or import a list.</div>')
+    body = f"""<div class="toolbar"><input id="filter" placeholder="Filter rigs..." aria-label="Filter rigs">
+<span style="flex:1"></span>
+<form class="inl" method="post" action="/rigs/bulk" data-confirm="Re-arm ALL rigs for flashing?">{csrf(sid)}<input type="hidden" name="action" value="reflash"><button class="g">{icon("refresh", 15)}Reflash all</button></form>
+<form class="inl" method="post" action="/rigs/bulk" data-confirm="Mark all rigs as already deployed?">{csrf(sid)}<input type="hidden" name="action" value="done"><button class="g">{icon("skip", 15)}Mark all deployed</button></form></div>
+<div class="card" id="live">{table}</div>
+<div class="card"><h2>Add a rig</h2><form method="post" action="/rigs/add">{csrf(sid)}<div class="fg">
+<label>Name<input name="name" required placeholder="rig01"></label>
+<label>MAC address<input name="mac" required placeholder="aa:bb:cc:dd:ee:ff"></label>
+<label>Static IP (optional)<input name="ip" placeholder="leave blank for DHCP"></label>
+<label>Group<select name="group">{gopts}</select></label>
+<div><button>{icon("plus", 15)}Add rig</button></div></div></form></div>
+<div class="card"><h2>Import a list</h2><form method="post" action="/rigs/import">{csrf(sid)}
+<p class="hint" style="margin-top:0">One rig per line: <code>name MAC [IP] [group]</code>, separated by spaces, commas or tabs. Existing MACs are updated. Bad lines are skipped and reported.</p>
+<textarea name="list" rows="6" placeholder="rig01 aa:bb:cc:dd:ee:01 192.168.1.51&#10;rig02 aa:bb:cc:dd:ee:02"></textarea>
+<p><button>{icon("upload", 15)}Import</button></p></form></div>
+<p class="hint">A rig is flashed on its next network boot until it reports success. After that it boots from its own disk.
+<b>Reflash</b> re-arms it. <b>Mark as deployed</b> makes it skip flashing (for rigs that are already set up).</p>"""
+    return L(sid, "Rigs", body, "rigs", q, sub="Machines this server deploys Hive OS to")
+
+def p_rig_edit(sid, q, mac):
+    r = cfg["rigs"].get(mac)
+    if not r: return None
+    gopts = "".join(f'<option {"selected" if g == r.get("group") else ""}>{e(g)}</option>' for g in cfg["groups"])
+    body = f"""<div class="card"><form method="post" action="/rigs/{quote(mac, safe='')}/edit">{csrf(sid)}<div class="fg">
+<label>Name<input name="name" value="{e(r['name'])}" required></label>
+<label>MAC address<input value="{e(mac)}" disabled></label>
+<label>Static IP (optional)<input name="ip" value="{e(r.get('ip', ''))}" placeholder="blank = DHCP"></label>
+<label>Group<select name="group">{gopts}</select></label></div>
+<p style="margin-bottom:0"><button>Save changes</button> <a class="btn g" href="/rigs">Cancel</a></p></form></div>
+<p class="hint">Changes apply the next time the rig is flashed. Use Reflash on the Rigs page to redeploy.</p>"""
+    return L(sid, f"Edit {r['name']}", body, "rigs", q)
 
 def p_groups(sid, q):
     cards = ""
     for n, g in cfg["groups"].items():
-        cards += f"""<div class=card><form class=row method=post action=/groups/save>{csrf(sid)}<input type=hidden name=name value="{e(n)}">
-<b>{e(n)}</b><label>Network (CIDR)<input name=network value="{e(g['network'])}"></label><label>Gateway<input name=gateway value="{e(g['gateway'])}"></label>
-<label>DNS (blank = gateway)<input name=dns value="{e(g.get('dns',''))}"></label><label>Hive API URL<input name=hive_url value="{e(g['hive_url'])}" size=28></label>
-<label>Farm hash<input name=farm_hash value="{e(g['farm_hash'])}"></label><label>Target disk (blank = auto)<input name=disk value="{e(g.get('disk',''))}" placeholder=/dev/sda></label>
-<button>Save</button></form>
-<form method=post action="/groups/{quote(n)}/delete">{csrf(sid)}<button class=g>Delete group</button></form></div>"""
-    return page("Groups", cards + f"""<h2>New group</h2><form class=row method=post action=/groups/save>{csrf(sid)}
-<label>Name<input name=name required></label><label>Network<input name=network value="192.168.1.0/24"></label><label>Gateway<input name=gateway value="192.168.1.1"></label>
-<label>Hive API URL<input name=hive_url value="https://api2.hiveos.farm"></label><label>Farm hash<input name=farm_hash></label><button>Create</button></form>
-<p class=mut>Network/gateway/DNS only apply to rigs with a fixed IP. Rigs without one keep using DHCP from your router.</p>""", sid)
+        used = sum(1 for r in cfg["rigs"].values() if r.get("group") == n)
+        dele = (f'<form class="inl" method="post" action="/groups/{quote(n, safe="")}/delete" data-confirm="Delete group {e(n)}? Its rigs move to another group.">{csrf(sid)}<button class="d">{icon("trash", 15)}Delete</button></form>'
+                if len(cfg["groups"]) > 1 else "")
+        cards += f"""<div class="card"><form method="post" action="/groups/save">{csrf(sid)}<input type="hidden" name="name" value="{e(n)}">
+<h2>{e(n)} <span class="mut" style="font-weight:500">&middot; {used} rig{'s' if used != 1 else ''}</span></h2><div class="fg">
+<label>Network (CIDR)<input name="network" value="{e(g['network'])}"></label>
+<label>Gateway<input name="gateway" value="{e(g['gateway'])}"></label>
+<label>DNS (blank = gateway)<input name="dns" value="{e(g.get('dns', ''))}"></label>
+<label>Hive API URL<input name="hive_url" value="{e(g['hive_url'])}"></label>
+<label>Farm hash<input name="farm_hash" value="{e(g['farm_hash'])}" placeholder="from your Hive farm settings"></label>
+<label>Target disk (blank = auto)<input name="disk" value="{e(g.get('disk', ''))}" placeholder="/dev/sda"></label></div>
+<p style="margin-bottom:0"><button>Save</button> {dele}</p></form></div>"""
+    body = f"""{cards}<details class="card" style="margin-top:0"><summary>{icon("plus", 15)} New group</summary><form method="post" action="/groups/save" style="margin-top:14px">{csrf(sid)}<div class="fg">
+<label>Name<input name="name" required></label><label>Network (CIDR)<input name="network" value="192.168.1.0/24"></label>
+<label>Gateway<input name="gateway" value="192.168.1.1"></label><label>Hive API URL<input name="hive_url" value="https://api2.hiveos.farm"></label>
+<label>Farm hash<input name="farm_hash"></label><div><button>Create group</button></div></div></form></details>
+<p class="hint">Network, gateway and DNS apply only to rigs with a static IP. Rigs without one keep using DHCP from your router.
+"Auto" disk picks the smallest internal disk of 7 GB or more.</p>"""
+    return L(sid, "Groups", body, "groups", q, sub="Network and Hive account settings applied to rigs")
 
 def p_images(sid, q):
-    files = sorted(f for f in os.listdir(IMAGES) if not f.endswith(".part"))
     rows = ""
-    for f in files:
-        sz = os.path.getsize(os.path.join(IMAGES, f)) / 1e6
-        sel = "<b class=ok>active</b>" if f == cfg["image"] else ""
-        rows += (f'<tr><td>{e(f)}<td>{sz:,.0f} MB<td>{sel}<td><form class=inl method=post action=/images/select>{csrf(sid)}<input type=hidden name=file value="{e(f)}"><button class=g>Use</button></form> '
-                 f'<form class=inl method=post action=/images/delete>{csrf(sid)}<input type=hidden name=file value="{e(f)}"><button class=g>Delete</button></form></tr>')
-    prog = "".join(f'<div class=card>{e(k)}: {e(v)}</div>' for k, v in fetches.items())
-    return page("Image", f"""{prog}<table><tr><th>File<th>Size<th><th></tr>{rows or '<tr><td colspan=4 class=mut>No images</tr>'}</table>
-<h2>Download image from URL</h2><form class=row method=post action=/images/fetch>{csrf(sid)}
-<label>URL of a Hive OS .img.xz / .img.gz / .img<input name=url size=60 required></label><button>Download</button></form>
-<p class=mut>Or copy the file into <code>&lt;umbrel&gt;/app-data/HiveOSPXE-hive-os-pxe/data/images/</code>. Get the link from hiveos.farm downloads.</p>""", sid)
+    for f in image_files():
+        act = f == cfg["image"]
+        rows += (f'<tr><td><b>{e(f)}</b></td><td>{human(image_size(f))}</td><td>{badge("done").replace("Deployed", "Active") if act else ""}</td>'
+                 f'<td class="r">{"" if act else f"<form class=inl method=post action=/images/select>{csrf(sid)}<input type=hidden name=file value={chr(34)}{e(f)}{chr(34)}><button class=g>Use this</button></form> "}'
+                 f'<form class="inl" method="post" action="/images/delete" data-confirm="Delete {e(f)}?">{csrf(sid)}<input type="hidden" name="file" value="{e(f)}"><button class="d ic" aria-label="Delete">{icon("trash", 15)}</button></form></td></tr>')
+    table = (f'<div class="tw"><table><thead><tr><th>File<th>Size<th><th></tr></thead><tbody>{rows}</tbody></table></div>'
+             if rows else '<div class="empty">No images yet. Download or upload one below.</div>')
+    prog = ""
+    for n, s in list(fetches.items()):
+        if s["status"] == "downloading":
+            pct = s["done"] * 100 // s["total"] if s["total"] else 0
+            prog += f'<div class="card"><b>Downloading {e(n)}</b><div class="pct">{human(s["done"])}{f" of {human(s["total"])}" if s["total"] else ""}</div>{bar(pct) if s["total"] else ""}</div>'
+        elif s["status"] == "failed":
+            prog += (f'<div class="banner err">{icon("alert")}{e(n)}: {e(s["err"])}<form class="inl" method="post" action="/images/dismiss" style="margin-left:auto">{csrf(sid)}'
+                     f'<input type="hidden" name="file" value="{e(n)}"><button class="g">Dismiss</button></form></div>')
+    body = f"""<div id="live">{prog}<div class="card">{table}</div></div>
+<div class="card"><h2>Download from a link</h2><form method="post" action="/images/fetch">{csrf(sid)}<div class="fg">
+<label class="wide">Image URL (.img.xz, .img.gz, .img.zst or .img)<input name="url" required placeholder="https://.../hiveos-xxxx.img.xz"></label>
+<div><button>{icon("download", 15)}Download</button></div></div></form>
+<p class="hint">Copy the link from the Hive OS download page. The file is stored on this server and streamed to rigs, so a fast disk and LAN help.</p></div>
+<div class="card"><h2>Upload a file</h2><div class="dz" id="dz" data-csrf="{sessions[sid]}">{icon("upload", 22)}<div id="upst">Drop an image here, or click to choose a file</div></div>
+<input type="file" id="file" hidden accept=".img,.xz,.gz,.zst"><p class="hint">You can also copy files into <code>app-data/HiveOSPXE-hive-os-pxe/data/images/</code> on the Umbrel.</p></div>"""
+    return L(sid, "Image", body, "image", q, sub="The Hive OS image flashed onto rigs")
 
 def p_settings(sid, q):
-    ip, _ = detect_net()
-    return page("Settings", f"""<form class=row method=post action=/settings>{csrf(sid)}
-<label>Server IP override (blank = auto: {e(ip)})<input name=server_ip value="{e(cfg.get('server_ip',''))}"></label><button>Save &amp; restart dnsmasq</button></form>""", sid)
+    ip, iface = detect_net()
+    ports = [("67", "UDP", "proxyDHCP (PXE announce)", None), ("69", "UDP", "TFTP (iPXE boot files)", None), ("4011", "UDP", "PXE boot server", None),
+             (str(ADMIN_PORT), "TCP", "Admin UI (behind Umbrel port 8380)", tcp_ok(ADMIN_PORT)), (str(PUBLIC_PORT), "TCP", "Rig files: boot script, kernel, image", tcp_ok(PUBLIC_PORT))]
+    prow = "".join(f'<tr><td class="mono">{p}</td><td>{pr}</td><td>{d}</td><td>{"" if ok is None else badge("done" if ok else "failed").replace("Deployed", "Listening").replace("Failed", "Down")}</td></tr>' for p, pr, d, ok in ports)
+    body = f"""<div class="card"><h2>Network</h2><form method="post" action="/settings">{csrf(sid)}<div class="fg">
+<label>Server IP override<input name="server_ip" value="{e(cfg.get('server_ip', ''))}" placeholder="auto: {e(ip)}"></label>
+<div><button>Save &amp; restart dnsmasq</button></div></div></form>
+<p class="hint">Detected {e(ip)} on {e(iface or "?")}. Only override this if detection picks the wrong address. dnsmasq is
+<b>{"running" if dnsmasq_up() else "stopped"}</b>.</p>
+<form method="post" action="/settings/restart">{csrf(sid)}<button class="g">{icon("refresh", 15)}Restart dnsmasq</button></form></div>
+<div class="card"><h2>Ports</h2><div class="tw"><table><thead><tr><th>Port<th>Proto<th>Purpose<th></tr></thead><tbody>{prow}</tbody></table></div>
+<p class="hint">UDP listeners cannot be probed from inside the app. Verify them with <code>tests/test-umbrel.sh</code>. Rig file port {PUBLIC_PORT} has no login by design: keep it on your LAN.</p></div>
+<div class="card"><h2>Backup</h2><p class="hint" style="margin-top:0">Download rigs, groups and settings as JSON (password hash excluded).</p>
+<a class="btn g" href="/settings/export">{icon("download", 15)}Export configuration</a></div>"""
+    return L(sid, "Settings", body, "settings", q, sub="Network detection, ports and backup")
 
-def p_password(sid, q, msg=""):
+def p_password(sid, q, msg=None):
     forced = not cfg["password_changed"]
-    return page("Change password", (f'<p class=bad>You must set a new password before continuing.</p>' if forced else "") + msg +
-                f"""<form class=row method=post action=/password>{csrf(sid)}<label>Current<input type=password name=old required></label>
-<label>New (min 8)<input type=password name=new required minlength=8></label><label>Repeat<input type=password name=new2 required></label><button>Change</button></form>""", sid)
+    body = f"""{"<div class=banner style=background:var(--warnbg);color:var(--warn)>" + icon("alert") + "Choose a new password to continue.</div>" if forced else ""}
+<div class="card" style="max-width:460px"><form method="post" action="/password">{csrf(sid)}<div style="display:grid;gap:14px">
+<label>Current password<input type="password" name="old" required autocomplete="current-password"></label>
+<label>New password (8+ characters)<input type="password" name="new" required minlength="8" autocomplete="new-password"></label>
+<label>Repeat new password<input type="password" name="new2" required autocomplete="new-password"></label>
+<div><button>Change password</button></div></div></form></div>"""
+    return layout("Change password", body, sessions[sid], "key", msg=msg, forced=forced,
+                  sub="Required on first login" if forced else "")
 
-def fetch_image(url):
-    name = os.path.basename(urlparse(url).path) or "hiveos.img"
-    name = re.sub(r"[^A-Za-z0-9._-]", "_", name)
-    dst = os.path.join(IMAGES, name)
-    try:
-        fetches[name] = "starting"
-        with urllib.request.urlopen(url, timeout=30) as r, open(dst + ".part", "wb") as f:
-            total = int(r.headers.get("Content-Length", 0)); done = 0
-            while chunk := r.read(1 << 20):
-                f.write(chunk); done += len(chunk)
-                fetches[name] = f"{done/1e6:,.0f} / {total/1e6:,.0f} MB" if total else f"{done/1e6:,.0f} MB"
-        os.replace(dst + ".part", dst)
-        fetches[name] = "done"
-        if not cfg["image"]:
-            cfg["image"] = name; save(cfg)
-    except Exception as ex:
-        fetches[name] = f"failed: {ex}"
+def login_page(msg=""):
+    return bare("Log in", f"""<div class="card"><form method="post" action="/login"><div style="display:grid;gap:14px">
+{f'<div class="banner err">{e(msg)}</div>' if msg else ''}
+<label>Password<input type="password" name="pw" autofocus autocomplete="current-password"></label>
+<button style="justify-content:center">Log in</button></div></form></div>
+<p class="hint" style="text-align:center">First time? Use the password shown for this app in Umbrel.</p>""")
 
 
 # ---------- handlers ----------
@@ -325,14 +474,21 @@ class Base(BaseHTTPRequestHandler):
         self.end_headers()
         if self.command != "HEAD": self.wfile.write(body)
 
-    def redirect(self, to, headers=None): self.send(303, b"", headers={"Location": to, **(headers or {})})
+    def go(self, to, kind=None, text=None, headers=None):
+        if text: to += ("&" if "?" in to else "?") + f"k={kind}&m={quote(text)}"
+        self.send(303, b"", headers={"Location": to, **(headers or {})})
 
-    def stream_file(self, path, ctype="application/octet-stream"):
+    def stream_file(self, path, ctype="application/octet-stream", mac=None):
         if not os.path.isfile(path): return self.send(404, b"not found", "text/plain")
-        size = os.path.getsize(path)
+        size = os.path.getsize(path); rig = cfg["rigs"].get(mac) if mac else None
         self.send_response(200); self.send_header("Content-Type", ctype); self.send_header("Content-Length", str(size)); self.end_headers()
         if self.command == "HEAD": return
-        with open(path, "rb") as f: shutil.copyfileobj(f, self.wfile, 1 << 20)
+        sent = 0; last = 0
+        with open(path, "rb") as f:
+            while chunk := f.read(1 << 20):
+                self.wfile.write(chunk); sent += len(chunk)
+                if rig and time.time() - last > 1:
+                    rig["progress"] = min(99, sent * 100 // size); rig["seen_ts"] = time.time(); last = time.time()
 
 
 class Public(Base):
@@ -342,18 +498,17 @@ class Public(Base):
         if p == "/boot.ipxe":
             mac = norm_mac(q.get("mac", [""])[0])
             with lock:
-                if mac in cfg["rigs"]:
-                    cfg["rigs"][mac]["seen"] = now(); save(cfg)
-                events.append(f"{now()} boot.ipxe requested by {mac or 'unknown'}")
+                if mac in cfg["rigs"]: cfg["rigs"][mac]["seen_ts"] = time.time(); save(cfg)
+                events.append((time.time(), f"{cfg['rigs'][mac]['name'] if mac in cfg['rigs'] else mac or 'unknown device'} requested its boot script"))
                 return self.send(200, boot_script(mac).encode(), "text/plain")
         if p == "/hive.apkovl.tar.gz": return self.send(200, build_apkovl(), "application/gzip")
         if p.startswith("/netboot/"): return self.stream_file(os.path.join(NETBOOT, os.path.basename(p)))
         if p.startswith("/image/"):
-            return self.stream_file(os.path.join(IMAGES, os.path.basename(p)))
+            return self.stream_file(os.path.join(IMAGES, os.path.basename(p)), mac=norm_mac(q.get("mac", [""])[0]))
         if p == "/api/ping": return self.send(200, b"ok", "text/plain")
         m = re.match(r"^/api/config/([^/]+)/(flash\.env|rig\.conf|20-ethernet\.network)$", p)
         if m:
-            mac = norm_mac(m.group(1)); rig = cfg["rigs"].get(mac)
+            mac = norm_mac(m.group(1).replace("%3A", ":")); rig = cfg["rigs"].get(mac)
             if not rig: return self.send(404, b"unknown rig", "text/plain")
             body = {"flash.env": flash_env, "rig.conf": rig_conf, "20-ethernet.network": network_file}[m.group(2)](rig)
             return self.send(200, body.encode(), "text/plain") if body else self.send(404, b"none", "text/plain")
@@ -362,8 +517,9 @@ class Public(Base):
             with lock:
                 rig = cfg["rigs"].get(mac)
                 if rig and st in ("start", "done", "failed"):
-                    rig["state"] = {"start": "flashing", "done": "done", "failed": "failed"}[st]; rig["seen"] = now(); save(cfg)
-                events.append(f"{now()} {rig['name'] if rig else mac}: {st} {msg[:200]}")
+                    rig["state"] = {"start": "flashing", "done": "done", "failed": "failed"}[st]; rig["seen_ts"] = time.time()
+                    rig["progress"] = {"start": 0, "done": 100, "failed": rig.get("progress", 0)}[st]; save(cfg)
+                events.append((time.time(), f"{rig['name'] if rig else mac}: {st} {msg[:200]}"))
             return self.send(200, b"ok", "text/plain")
         self.send(404, b"not found", "text/plain")
 
@@ -380,85 +536,150 @@ class Admin(Base):
 
     def do_GET(self):
         u = urlparse(self.path); q = parse_qs(u.query); p = u.path
-        if p == "/login": return self.send(200, self.login_page())
+        if p == "/login": return self.send(200, login_page())
         sid = self.session()
-        if not sid: return self.redirect("/login")
-        if not cfg["password_changed"] and p != "/password": return self.redirect("/password")
+        if not sid: return self.go("/login")
+        if not cfg["password_changed"] and p != "/password": return self.go("/password")
         routes = {"/": p_status, "/rigs": p_rigs, "/groups": p_groups, "/images": p_images, "/settings": p_settings, "/password": p_password}
         if p == "/api/status":
-            return self.send(200, json.dumps({"dnsmasq": bool(dnsmasq_proc and dnsmasq_proc.poll() is None), "rigs": cfg["rigs"], "image": cfg["image"]}).encode(), "application/json")
+            return self.send(200, json.dumps({"dnsmasq": dnsmasq_up(), "rigs": cfg["rigs"], "image": cfg["image"]}).encode(), "application/json")
+        if p == "/settings/export":
+            data = {k: v for k, v in cfg.items() if k != "password"}
+            return self.send(200, json.dumps(data, indent=1).encode(), "application/json", {"Content-Disposition": 'attachment; filename="hive-os-pxe-config.json"'})
+        m = re.match(r"^/rigs/([^/]+)/edit$", p)
+        if m:
+            body = p_rig_edit(sid, q, norm_mac(m.group(1).replace("%3A", ":")))
+            return self.send(200, body) if body else self.go("/rigs", "err", "Rig not found")
         if p in routes: return self.send(200, routes[p](sid, q))
-        self.send(404, page("Not found", "", sid))
+        self.send(404, layout("Not found", '<div class="card">That page does not exist.</div>', sessions[sid], ""))
 
-    def login_page(self, msg=""):
-        return (f'<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Login</title><style>{CSS}</style><main><h1>Hive PXE Deploy</h1>{msg}'
-                '<form class=row method=post action=/login><label>Password<input type=password name=pw autofocus></label><button>Log in</button></form></main>').encode()
+    def drain(self, n):
+        while n > 0:
+            chunk = self.rfile.read(min(1 << 20, n))
+            if not chunk: break
+            n -= len(chunk)
+
+    def do_PUT(self):
+        u = urlparse(self.path); sid = self.session()
+        if u.path != "/images/upload" or not sid or not cfg["password_changed"] or not hmac.compare_digest(self.headers.get("X-CSRF", ""), sessions[sid]):
+            self.close_connection = True; return self.send(403, b"forbidden", "text/plain", {"Connection": "close"})
+        name = safe_image_name(parse_qs(u.query).get("name", [""])[0]); n = int(self.headers.get("Content-Length", 0))
+        if not name:
+            self.drain(n); return self.send(400, b"File name must end in .img, .img.xz, .img.gz or .img.zst", "text/plain")
+        if n > shutil.disk_usage(IMAGES).free:
+            self.close_connection = True; return self.send(400, b"Not enough free disk space", "text/plain", {"Connection": "close"})
+        dst = os.path.join(IMAGES, name)
+        try:
+            with open(dst + ".part", "wb") as f:
+                left = n
+                while left > 0:
+                    chunk = self.rfile.read(min(1 << 20, left))
+                    if not chunk: raise OSError("connection lost")
+                    f.write(chunk); left -= len(chunk)
+            os.replace(dst + ".part", dst)
+        except OSError as ex:
+            try: os.remove(dst + ".part")
+            except OSError: pass
+            return self.send(500, f"Upload failed: {ex}".encode(), "text/plain")
+        with lock:
+            if not cfg["image"]: cfg["image"] = name; save(cfg)
+        self.send(200, b"ok", "text/plain")
 
     def do_POST(self):
         p = urlparse(self.path).path; f = self.form()
         if p == "/login":
             if check_pw(f.get("pw", ""), cfg["password"]):
                 sid = secrets.token_urlsafe(24); sessions[sid] = secrets.token_urlsafe(16)
-                return self.redirect("/", {"Set-Cookie": f"sid={sid}; HttpOnly; SameSite=Strict; Path=/"})
-            time.sleep(1); return self.send(401, self.login_page('<p class=bad>Wrong password</p>'))
+                return self.go("/", headers={"Set-Cookie": f"sid={sid}; HttpOnly; SameSite=Strict; Path=/"})
+            time.sleep(1); return self.send(401, login_page("Wrong password"))
         sid = self.session()
-        if not sid or not hmac.compare_digest(f.get("csrf", ""), sessions[sid]): return self.redirect("/login")
-        if p == "/logout": sessions.pop(sid, None); return self.redirect("/login")
+        if not sid or not hmac.compare_digest(f.get("csrf", ""), sessions[sid]): return self.go("/login")
+        if p == "/logout": sessions.pop(sid, None); return self.go("/login")
         if p == "/password":
-            if not check_pw(f.get("old", ""), cfg["password"]): return self.send(200, p_password(sid, {}, '<p class=bad>Current password is wrong</p>'))
-            if len(f.get("new", "")) < 8 or f["new"] != f.get("new2") or f["new"] == f["old"]:
-                return self.send(200, p_password(sid, {}, '<p class=bad>New password must be 8+ chars, match, and differ from the old one</p>'))
+            err = None
+            if not check_pw(f.get("old", ""), cfg["password"]): err = "Current password is wrong"
+            elif len(f.get("new", "")) < 8: err = "New password must be at least 8 characters"
+            elif f["new"] != f.get("new2"): err = "The new passwords do not match"
+            elif f["new"] == f["old"]: err = "New password must differ from the current one"
+            if err: return self.send(200, p_password(sid, None, ("err", err)))
             cfg["password"] = hash_pw(f["new"]); cfg["password_changed"] = True; save(cfg)
             for s in [s for s in sessions if s != sid]: sessions.pop(s)
-            return self.redirect("/")
-        if not cfg["password_changed"]: return self.redirect("/password")
+            return self.go("/", "ok", "Password changed")
+        if not cfg["password_changed"]: return self.go("/password")
         with lock:
-            if p == "/rigs/add" or p == "/rigs/import":
-                items = [(f.get("name"), f.get("mac"), f.get("ip"), f.get("group"))] if p == "/rigs/add" else \
-                        [tuple((re.split(r"[\s,;]+", l.strip()) + ["", "", ""])[:4]) for l in f.get("list", "").splitlines() if l.strip()]
-                for n, m, ip, g in items:
-                    m = norm_mac(m)
-                    if p == "/rigs/import" and not MAC_RE.match(ip or "x") and ip and re.match(r"^\d+\.\d+\.\d+\.\d+$", ip) is None: g, ip = ip, ""
-                    if m and n: cfg["rigs"][m] = {"name": re.sub(r"[^A-Za-z0-9._-]", "", n), "ip": ip or "", "group": g if g in cfg["groups"] else "default", "state": "pending"}
-                save(cfg); return self.redirect("/rigs")
-            m = re.match(r"^/rigs/([^/]+)/(delete|reflash|skip)$", p)
+            if p == "/ack": cfg["ack_static_ip"] = True; save(cfg); return self.go("/")
+            if p == "/rigs/add":
+                r, err = check_rig(f.get("name"), f.get("mac"), f.get("ip"), f.get("group"))
+                if err: return self.go("/rigs", "err", err)
+                cfg["rigs"][r["mac"]] = {"name": r["name"], "ip": r["ip"], "group": r["group"], "state": "pending", "progress": 0}
+                save(cfg); return self.go("/rigs", "ok", f"Added {r['name']}")
+            if p == "/rigs/import":
+                ok = 0; bad = []
+                for n, line in enumerate(f.get("list", "").splitlines(), 1):
+                    if not line.strip(): continue
+                    t = re.split(r"[\s,;]+", line.strip()) + ["", "", ""]
+                    name, mac, rest = t[0], t[1], [x for x in t[2:] if x]
+                    ip = next((x for x in rest if valid_ip(x)), ""); grp = next((x for x in rest if x in cfg["groups"]), "default" if "default" in cfg["groups"] else next(iter(cfg["groups"])))
+                    r, err = check_rig(name, mac, ip, grp, current=norm_mac(mac))
+                    if err: bad.append(f"line {n}: {err}"); continue
+                    old = cfg["rigs"].get(r["mac"], {})
+                    cfg["rigs"][r["mac"]] = {**old, "name": r["name"], "ip": r["ip"], "group": r["group"], "state": old.get("state", "pending"), "progress": old.get("progress", 0)}
+                    ok += 1
+                save(cfg)
+                return self.go("/rigs", "ok" if not bad else "err", f"Imported {ok} rig(s)" + (f". Skipped: {'; '.join(bad[:3])}" + (" ..." if len(bad) > 3 else "") if bad else ""))
+            if p == "/rigs/bulk":
+                for r in cfg["rigs"].values():
+                    r["state"] = "pending" if f.get("action") == "reflash" else "done"; r["progress"] = 0 if f.get("action") == "reflash" else 100
+                save(cfg); return self.go("/rigs", "ok", "All rigs updated")
+            m = re.match(r"^/rigs/([^/]+)/(delete|reflash|skip|edit)$", p)
             if m:
-                mac = norm_mac(m.group(1).replace("%3A", ":")) or m.group(1); r = cfg["rigs"].get(mac)
-                if r:
-                    if m.group(2) == "delete": cfg["rigs"].pop(mac)
-                    else: r["state"] = "pending" if m.group(2) == "reflash" else "done"
-                    save(cfg)
-                return self.redirect("/rigs")
+                mac = norm_mac(m.group(1).replace("%3A", ":")); r = cfg["rigs"].get(mac)
+                if not r: return self.go("/rigs", "err", "Rig not found")
+                act = m.group(2)
+                if act == "delete": cfg["rigs"].pop(mac)
+                elif act == "edit":
+                    n, err = check_rig(f.get("name"), mac, f.get("ip"), f.get("group"), current=mac)
+                    if err: return self.go(f"/rigs/{quote(mac, safe='')}/edit", "err", err)
+                    r.update(name=n["name"], ip=n["ip"], group=n["group"])
+                else:
+                    r["state"] = "pending" if act == "reflash" else "done"; r["progress"] = 0 if act == "reflash" else 100
+                save(cfg); return self.go("/rigs", "ok", {"delete": "Rig deleted", "reflash": f"{r['name']} will be flashed on its next network boot", "skip": f"{r['name']} marked as deployed", "edit": "Saved"}[act])
             if p == "/groups/save":
-                n = re.sub(r"[^A-Za-z0-9._-]", "", f.get("name", ""))
-                if n:
-                    g = cfg["groups"].setdefault(n, {})
-                    for k in ("network", "gateway", "dns", "hive_url", "farm_hash", "disk"): g[k] = f.get(k, g.get(k, "")).strip()
-                    save(cfg)
-                return self.redirect("/groups")
+                n = f.get("name", "").strip()
+                if not NAME_RE.match(n): return self.go("/groups", "err", "Group name may use letters, digits, . _ -")
+                g, err = check_group(f)
+                if err: return self.go("/groups", "err", err)
+                cfg["groups"][n] = g; save(cfg); return self.go("/groups", "ok", f"Saved group {n}")
             m = re.match(r"^/groups/([^/]+)/delete$", p)
             if m:
-                if len(cfg["groups"]) > 1 and m.group(1) in cfg["groups"]:
-                    cfg["groups"].pop(m.group(1))
+                n = m.group(1).replace("%20", " ")
+                if len(cfg["groups"]) > 1 and n in cfg["groups"]:
+                    cfg["groups"].pop(n)
                     for r in cfg["rigs"].values():
                         if r["group"] not in cfg["groups"]: r["group"] = next(iter(cfg["groups"]))
-                    save(cfg)
-                return self.redirect("/groups")
+                    save(cfg); return self.go("/groups", "ok", f"Deleted group {n}")
+                return self.go("/groups", "err", "Cannot delete the last group")
             if p == "/images/select":
-                if os.path.isfile(os.path.join(IMAGES, os.path.basename(f.get("file", "")))): cfg["image"] = os.path.basename(f["file"]); save(cfg)
-                return self.redirect("/images")
+                fn = os.path.basename(f.get("file", ""))
+                if os.path.isfile(os.path.join(IMAGES, fn)): cfg["image"] = fn; save(cfg); return self.go("/images", "ok", f"Now flashing {fn}")
+                return self.go("/images", "err", "Image not found")
             if p == "/images/delete":
                 fn = os.path.basename(f.get("file", "")); fp = os.path.join(IMAGES, fn)
                 if os.path.isfile(fp): os.remove(fp)
                 if cfg["image"] == fn: cfg["image"] = ""; save(cfg)
-                return self.redirect("/images")
+                return self.go("/images", "ok", "Image deleted")
+            if p == "/images/dismiss": fetches.pop(f.get("file", ""), None); return self.go("/images")
             if p == "/images/fetch":
-                if re.match(r"^https?://", f.get("url", "")): threading.Thread(target=fetch_image, args=(f["url"],), daemon=True).start()
-                return self.redirect("/images")
+                url = f.get("url", "").strip()
+                if not re.match(r"^https?://", url): return self.go("/images", "err", "Enter an http(s) link")
+                if not safe_image_name(urlparse(url).path): return self.go("/images", "err", "Link must end in .img, .img.xz, .img.gz or .img.zst (unzip .zip files first)")
+                threading.Thread(target=fetch_image, args=(url,), daemon=True).start()
+                return self.go("/images", "ok", "Download started")
             if p == "/settings":
                 v = f.get("server_ip", "").strip()
-                if v and not re.match(r"^\d+\.\d+\.\d+\.\d+$", v): return self.redirect("/settings")
-                cfg["server_ip"] = v; save(cfg); run_dnsmasq(); return self.redirect("/")
+                if v and not valid_ip(v): return self.go("/settings", "err", "Server IP must be an IPv4 address")
+                cfg["server_ip"] = v; save(cfg); run_dnsmasq(); return self.go("/settings", "ok", "Saved, dnsmasq restarted")
+            if p == "/settings/restart": run_dnsmasq(); return self.go("/settings", "ok", "dnsmasq restarted")
         self.send(404, b"not found", "text/plain")
 
 
@@ -468,6 +689,8 @@ def serve(handler, port):
 def main():
     global cfg
     cfg = load()
+    for r in cfg["rigs"].values():   # a rig left "flashing" across a restart is treated as failed
+        if r.get("state") == "flashing" and not r.get("seen_ts"): r["state"] = "pending"
     threading.Thread(target=serve, args=(Public, PUBLIC_PORT), daemon=True).start()
     run_dnsmasq()
     threading.Thread(target=supervise, daemon=True).start()
