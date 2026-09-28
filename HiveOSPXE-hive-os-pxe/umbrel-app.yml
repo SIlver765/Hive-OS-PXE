@@ -1,0 +1,36 @@
+manifestVersion: 1
+# Must be "<store id from umbrel-app-store.yml>-hive-os-pxe" - same as this folder name.
+id: HiveOSPXE-hive-os-pxe
+category: networking
+name: Hive OS PXE
+icon: https://raw.githubusercontent.com/SIlver765/Hive-OS-PXE/main/HiveOSPXE-hive-os-pxe/icon.svg
+version: "v0.1.0-Alpha1"
+tagline: Network-flash Hive OS onto mining rigs
+description: >-
+  A lean PXE deploy server for Hive OS rigs. Runs dnsmasq in proxy-DHCP mode (your router stays the
+  DHCP server) plus TFTP, and serves the Hive OS image over HTTP. Register rigs by name, MAC and
+  optional static IP, set per-group network, gateway, Hive API URL and farm hash, then boot the rigs
+  from the network. Each rig is flashed once and afterwards boots from its own disk.
+
+
+  Requirements: this machine must have a static IP or a DHCP reservation, and rigs must be able to
+  reach the internet while flashing (they fetch a small Alpine netboot environment).
+
+
+  Uses host networking and UDP ports 67, 69 and 4011. Port 80 is not used. Rig files are served
+  unauthenticated on TCP 8382 (LAN only, do not expose to the internet).
+developer: SIlver765
+website: https://github.com/SIlver765/Hive-OS-PXE
+dependencies: []
+repo: https://github.com/SIlver765/Hive-OS-PXE
+support: https://github.com/SIlver765/Hive-OS-PXE/issues
+port: 8380
+gallery: []
+path: ""
+defaultUsername: ""
+deterministicPassword: true
+torOnly: false
+submitter: SIlver765
+submission: https://github.com/SIlver765/Hive-OS-PXE
+releaseNotes: >-
+  v0.1.0-Alpha1: initial release.

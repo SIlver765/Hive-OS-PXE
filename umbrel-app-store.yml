@@ -1,0 +1,4 @@
+# Umbrel community app store manifest. `id` prefixes every app folder in this repo;
+# the app folder name and the `id` in its umbrel-app.yml must be `<this id>-hive-os-pxe`.
+id: HiveOSPXE
+name: Hive OS PXE by Silver
