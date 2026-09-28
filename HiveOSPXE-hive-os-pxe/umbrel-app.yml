@@ -4,7 +4,7 @@ id: HiveOSPXE-hive-os-pxe
 category: networking
 name: Hive OS PXE
 icon: https://raw.githubusercontent.com/SIlver765/Hive-OS-PXE/main/HiveOSPXE-hive-os-pxe/icon.svg
-version: "v0.1.0-Alpha1"
+version: "v1.0-Dev"
 tagline: Network-flash Hive OS onto mining rigs
 description: >-
   A lean PXE deploy server for Hive OS rigs. Runs dnsmasq in proxy-DHCP mode (your router stays the
@@ -33,4 +33,4 @@ torOnly: false
 submitter: SIlver765
 submission: https://github.com/SIlver765/Hive-OS-PXE
 releaseNotes: >-
-  v0.1.0-Alpha1: initial release.
+  v1.0-Dev: initial release.

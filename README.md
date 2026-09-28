@@ -25,7 +25,7 @@ tests/                        test-umbrel.sh (run on Umbrel), pxe-probe.py (run 
 
 ## Publish
 1. Create the GitHub repo `SIlver765/Hive-OS-PXE` and push this folder.
-2. Tag `v0.1.0-Alpha1`; CI pushes `ghcr.io/silver765/hive-os-pxe:v0.1.0-Alpha1` (make the package public, then pin `@sha256:` in the compose file like Triple-X).
+2. Tag `v1.0-Dev`; CI pushes `ghcr.io/silver765/hive-os-pxe:v1.0-Dev` (make the package public, then pin `@sha256:` in the compose file like Triple-X).
 3. Umbrel: App Store -> ... menu -> Community App Stores -> add the GitHub repo URL. Install "Hive OS PXE".
 
 ## First run
