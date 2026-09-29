@@ -2,7 +2,7 @@ manifestVersion: 1
 # Must be "<store id from umbrel-app-store.yml>-hive-os-pxe" - same as this folder name.
 id: HiveOSPXE-hive-os-pxe
 category: networking
-name: Hive OS PXE
+name: Hive OS PXE by Silver
 icon: https://raw.githubusercontent.com/SIlver765/Hive-OS-PXE/main/HiveOSPXE-hive-os-pxe/icon.svg
 version: "v1.0-Dev"
 tagline: Network-flash Hive OS onto mining rigs

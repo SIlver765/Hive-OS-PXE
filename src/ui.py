@@ -150,7 +150,7 @@ NAV = [("/", "status", "Dashboard"), ("/guide", "guide", "Guide"), ("/rigs", "ri
 
 def head(title):
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>{e(title)} - Hive OS PXE</title><link rel="icon" href="{FAVICON}"><style>{CSS}</style></head>')
+            f'<title>{e(title)} - Hive OS PXE by Silver</title><link rel="icon" href="{FAVICON}"><style>{CSS}</style></head>')
 
 def layout(title, body, csrf, active, sub="", actions="", msg=None, forced=False):
     """msg = (kind, text) where kind in ok/err/warn."""

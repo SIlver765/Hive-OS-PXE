@@ -34,7 +34,7 @@ land in `rig.conf` / `flash.env`, which are sourced as shell. Pages refresh ever
 ## Publish
 1. Create the GitHub repo `SIlver765/Hive-OS-PXE` and push this folder.
 2. Tag `v1.0-Dev`; CI pushes `ghcr.io/silver765/hive-os-pxe:v1.0-Dev` (make the package public, then pin `@sha256:` in the compose file).
-3. On the host: App Store, then the menu, then Community App Stores, and add the GitHub repo URL. Install "Hive OS PXE".
+3. On the host: App Store, then the menu, then Community App Stores, and add the GitHub repo URL. Install "Hive OS PXE by Silver".
 
 ## First run
 Open the app and follow the **Guide** tab. In short: reserve an IP for the host machine, add the Hive OS image, set the farm hash,
