@@ -1,5 +1,16 @@
 """HTML/CSS/JS for the admin UI. No dependencies, no build step, no external requests."""
-import html
+import html, re, threading
+
+_ctx = threading.local()
+
+def set_base(b): _ctx.base = b
+def base(): return getattr(_ctx, "base", "./")
+
+_ABS = re.compile(r"""(href|action)=(["'])/(?!/)([^"']*)\2""")
+
+def rel(page):
+    """Rewrite root-absolute href/action URLs to base-relative ones so the app works mounted at any path (e.g. /apps/<id>/)."""
+    return _ABS.sub(lambda m: f'{m.group(1)}={m.group(2)}{m.group(3) or "./"}{m.group(2)}', page)
 
 def e(s): return html.escape(str(s), quote=True)
 
@@ -134,9 +145,9 @@ JS = """
   dz.addEventListener('drop',function(e){e.preventDefault();if(e.dataTransfer.files[0])up(e.dataTransfer.files[0])});
   fi.addEventListener('change',function(){if(fi.files[0])up(fi.files[0])});
   function up(file){var st=document.getElementById('upst'),x=new XMLHttpRequest();
-   x.open('PUT','/images/upload?name='+encodeURIComponent(file.name));x.setRequestHeader('X-CSRF',dz.dataset.csrf);
+   x.open('PUT','images/upload?name='+encodeURIComponent(file.name));x.setRequestHeader('X-CSRF',dz.dataset.csrf);
    x.upload.onprogress=function(e){if(e.lengthComputable)st.textContent='Uploading '+file.name+': '+Math.round(e.loaded/e.total*100)+'%'};
-   x.onload=function(){location.href='/images?k='+(x.status==200?'ok':'err')+'&m='+encodeURIComponent(x.status==200?'Uploaded '+file.name:x.responseText)};
+   x.onload=function(){location.href='images?k='+(x.status==200?'ok':'err')+'&m='+encodeURIComponent(x.status==200?'Uploaded '+file.name:x.responseText)};
    x.onerror=function(){st.textContent='Upload failed'};x.send(file);}
  }
 })();
@@ -150,7 +161,7 @@ NAV = [("/", "status", "Dashboard"), ("/guide", "guide", "Guide"), ("/rigs", "ri
 
 def head(title):
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>{e(title)} - Hive OS PXE by Silver</title><link rel="icon" href="{FAVICON}"><style>{CSS}</style></head>')
+            f'<base href="{base()}"><title>{e(title)} - Hive OS PXE by Silver</title><link rel="icon" href="{FAVICON}"><style>{CSS}</style></head>')
 
 def layout(title, body, csrf, active, sub="", actions="", msg=None, forced=False):
     """msg = (kind, text) where kind in ok/err/warn."""
@@ -164,14 +175,16 @@ def layout(title, body, csrf, active, sub="", actions="", msg=None, forced=False
         banner = f'<div class="banner {"ok" if k == "ok" else "err" if k == "err" else "warn"}" data-auto="{1 if k == "ok" else ""}">{icon("check" if k == "ok" else "alert")}{e(t)}</div>'
     logout = (f'<form method="post" action="/logout"><input type="hidden" name="csrf" value="{csrf}">'
               f'<button class="nav">{icon("logout")}Log out</button></form>')
-    return (head(title) + f'<body><div class="app"><aside><div class="brand"><b>PXE</b><span>Hive OS PXE<small>by Silver</small></span></div>'
+    out = (head(title) + f'<body><div class="app"><aside><div class="brand"><b>PXE</b><span>Hive OS PXE<small>by Silver</small></span></div>'
             f'{nav}<span class="sp"></span>{logout}</aside><main><div class="ph"><div><h1>{e(title)}</h1>'
             f'{f"<p class=sub>{sub}</p>" if sub else ""}</div><div>{actions}</div></div>{banner}{body}</main></div>'
-            f'<script>{JS}</script></body></html>').encode()
+            f'<script>{JS}</script></body></html>')
+    return rel(out).encode()
 
 def bare(title, body):
-    return (head(title) + f'<body><div class="login"><div><div class="brand"><b>PXE</b><span>Hive OS PXE<small>by Silver</small></span></div>'
-            f'{body}</div></div></body></html>').encode()
+    out = (head(title) + f'<body><div class="login"><div><div class="brand"><b>PXE</b><span>Hive OS PXE<small>by Silver</small></span></div>'
+            f'{body}</div></div></body></html>')
+    return rel(out).encode()
 
 def badge(state):
     label = {"pending": "Pending", "flashing": "Flashing", "done": "Deployed", "failed": "Failed", "skip": "Skipped"}.get(state, state)

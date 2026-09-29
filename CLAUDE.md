@@ -9,6 +9,12 @@
 - The manifest `port:` is where the Open button goes. The app itself MUST be listening on exactly that
   port on the host. Bridge apps: publish it in `ports:`. Host-network apps (network_mode: host): bind
   that port in the app.
+- The 5tratumOS app window (and its Open button) shows the app through the OS's own proxy, mounted at
+  `/apps/<id>/`, not at the site root (the OS changelog mentions a shim for apps that assume `/`).
+  Any app UI must therefore work from any mount path: use RELATIVE links, form actions, redirects and
+  fetch URLs (never a leading `/`), or set a <base href>. Symptom of getting this wrong: the app works
+  at http://<ip>:<port> but its window shows the OS dashboard, because an absolute redirect such as
+  `Location: /login` escapes to the OS root.
 - docker on that machine needs sudo. Container names look like `5tratumos-<store-id>-<app>-server-1`.
 - Do not install the same app from two stores. Duplicate copies fight over the same ports.
 
@@ -16,6 +22,8 @@
 1. Container is Up/healthy (`sudo docker ps -a`), and the logs show a clean start.
 2. From another machine on the LAN, connect to the manifest port and load the page
    (Test-NetConnection <ip> -Port <port>, then fetch the page). Local-only checks are not enough.
+   Then open the app from its Open button / app window in the OS UI and confirm it shows the app,
+   not the OS dashboard.
 3. State plainly what was verified and what was NOT (e.g. PXE boot on real hardware).
 
 ## Release flow (one direction only: app repo -> store)

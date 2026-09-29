@@ -11,6 +11,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http.cookies import SimpleCookie
 from urllib.parse import urlparse, parse_qs, quote
+import ui as _ui
 from ui import e, icon, layout, bare, badge, bar, ago, human
 from guide import guide_body
 
@@ -485,6 +486,7 @@ class Base(BaseHTTPRequestHandler):
 
     def go(self, to, kind=None, text=None, headers=None):
         if text: to += ("&" if "?" in to else "?") + f"k={kind}&m={quote(text)}"
+        if to.startswith("/"): to = _ui.base() + to.lstrip("/")   # relative, so it stays under any proxy mount path
         self.send(303, b"", headers={"Location": to, **(headers or {})})
 
     def stream_file(self, path, ctype="application/octet-stream", mac=None):
@@ -544,6 +546,7 @@ class Admin(Base):
         return {k: v[0] for k, v in parse_qs(self.rfile.read(n).decode()).items()}
 
     def do_GET(self):
+        self.path, _p0 = app_path(self.path); _ui.set_base(rel_base(_p0))
         u = urlparse(self.path); q = parse_qs(u.query); p = u.path
         if p == "/login": return self.send(200, login_page())
         sid = self.session()
@@ -569,6 +572,7 @@ class Admin(Base):
             n -= len(chunk)
 
     def do_PUT(self):
+        self.path, _p0 = app_path(self.path); _ui.set_base(rel_base(_p0))
         u = urlparse(self.path); sid = self.session()
         if u.path != "/images/upload" or not sid or not cfg["password_changed"] or not hmac.compare_digest(self.headers.get("X-CSRF", ""), sessions[sid]):
             self.close_connection = True; return self.send(403, b"forbidden", "text/plain", {"Connection": "close"})
@@ -595,6 +599,7 @@ class Admin(Base):
         self.send(200, b"ok", "text/plain")
 
     def do_POST(self):
+        self.path, _p0 = app_path(self.path); _ui.set_base(rel_base(_p0))
         p = urlparse(self.path).path; f = self.form()
         if p == "/login":
             if check_pw(f.get("pw", ""), cfg["password"]):
@@ -690,6 +695,19 @@ class Admin(Base):
                 cfg["server_ip"] = v; save(cfg); run_dnsmasq(); return self.go("/settings", "ok", "Saved, dnsmasq restarted")
             if p == "/settings/restart": run_dnsmasq(); return self.go("/settings", "ok", "dnsmasq restarted")
         self.send(404, b"not found", "text/plain")
+
+
+def app_path(raw):
+    """Strip a proxy mount prefix (/apps/<id>) so the admin UI works when mounted anywhere.
+    Returns (path+query without prefix, path without prefix)."""
+    u = urlparse(raw); p = u.path
+    m = re.match(r"^/apps/[^/]+(/.*)?$", p)
+    if m: p = m.group(1) or "/"
+    return p + ("?" + u.query if u.query else ""), p
+
+def rel_base(p):
+    n = len([x for x in p.split("/") if x])
+    return "../" * (n - 1) if n > 1 else "./"
 
 
 def serve(handler, port):
