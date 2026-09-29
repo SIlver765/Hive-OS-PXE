@@ -2,7 +2,7 @@
 """Hive OS PXE deploy server: admin UI, rig-facing HTTP endpoints, dnsmasq supervisor.
 
 Stdlib only. Two listeners:
-  ADMIN_PORT  (8381) admin UI, session login, forced password change (behind the platform app proxy on 8380)
+  ADMIN_PORT  (8380) admin UI, session login, forced password change
   PUBLIC_PORT (8382) unauthenticated, LAN-facing: iPXE script, netboot files, image, per-rig config
 """
 import hashlib, hmac, html, io, json, os, re, secrets, shutil, socket, subprocess, tarfile
@@ -17,7 +17,7 @@ from guide import guide_body
 DATA = os.environ.get("DATA_DIR", "/data")
 TFTP = os.environ.get("TFTP_DIR", "/srv/tftp")
 NETBOOT = os.environ.get("NETBOOT_DIR", "/srv/netboot")
-ADMIN_PORT = int(os.environ.get("ADMIN_PORT", "8381"))
+ADMIN_PORT = int(os.environ.get("ADMIN_PORT", "8380"))
 PUBLIC_PORT = int(os.environ.get("PUBLIC_PORT", "8382"))
 ALPINE_BRANCH = os.environ.get("ALPINE_BRANCH", "v3.20")
 DNSMASQ_BIN = os.environ.get("DNSMASQ_BIN", "dnsmasq")

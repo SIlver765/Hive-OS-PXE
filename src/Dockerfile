@@ -11,6 +11,6 @@ WORKDIR /app
 COPY server.py ui.py guide.py /app/
 COPY scripts /app/scripts
 ENV DATA_DIR=/data ALPINE_BRANCH=v3.20
-EXPOSE 8381 8382
+EXPOSE 8380 8382
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD wget -q -O /dev/null http://127.0.0.1:8382/api/ping || exit 1
 CMD ["python3", "/app/server.py"]

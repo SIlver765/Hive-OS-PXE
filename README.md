@@ -25,8 +25,7 @@ land in `rig.conf` / `flash.env`, which are sourced as shell. Pages refresh ever
 ## Ports
 | Port | Proto | Purpose |
 |---|---|---|
-| 8380 | TCP | Admin UI through the platform app proxy (port 80 belongs to the host dashboard) |
-| 8381 | TCP | Admin backend (behind the proxy) |
+| 8380 | TCP | Admin UI, served directly (port 80 belongs to the host dashboard) |
 | 8382 | TCP | Rig-facing HTTP: iPXE script, netboot files, image, per-rig config. No login, LAN only |
 | 67, 4011 | UDP | proxyDHCP / PXE boot server |
 | 69 | UDP | TFTP |
