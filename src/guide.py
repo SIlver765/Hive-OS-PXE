@@ -38,13 +38,15 @@ rigs look in the wrong place. Ask your router to always give this machine the <b
 
     s2 = _step(2, "Get the Hive OS image", bool(img), f"""
 <p>The <b>image</b> is the Hive OS file that gets installed on each rig. You only need to get it once.</p>
-<ol><li>On the Hive OS website (hiveos.farm), open the download page and find the newest <b>Hive OS image</b>.
-It is a large file ending in <code>.img.xz</code>. <b>Do not unzip it.</b></li>
-<li>Right-click the download button, choose <b>Copy link address</b>.</li>
-<li>Open the <a href="/images">Image</a> tab here, paste the link into <b>Download from a link</b>, and press <b>Download</b>.
-A progress bar shows while it downloads (it is several gigabytes, so give it a few minutes).</li>
-<li>When it is finished it shows <b>Active</b>. If you have more than one image, press <b>Use this</b> on the one you want.</li></ol>
-{tip("Already downloaded the file to your computer? On the Image tab, drag it into the <b>Upload a file</b> box instead.")}
+<p><b>The easy way:</b> open the <a href="/images">Image</a> tab and press <b>Download latest stable</b>. The app finds the newest stable Hive OS on Hive's download site
+and downloads it for you. A progress bar shows while it downloads (it is over a gigabyte, so give it a few minutes). When it is finished it shows <b>Active</b>.</p>
+<p>The <b>Newest available</b> button is a newer build that Hive has not labelled stable. If you are not sure, use the stable one.</p>
+<p><b>Finding it yourself:</b></p>
+<ol><li>Go to <a href="https://download.hiveos.farm/" target="_blank" rel="noopener">download.hiveos.farm</a>.</li>
+<li>Find a file that starts with <code>hiveos-</code> and ends with <code>.img.xz</code>. <b>Do not unzip it.</b> Choose one with <code>stable</code> in its name.</li>
+<li>Right-click it and choose <b>Copy link address</b>, then paste the link into <b>Download from a link</b> on the Image tab and press <b>Download</b>.
+(Or save the file and drag it into <b>Upload a file</b>.)</li></ol>
+{tip("Do not use <code>hive-flasher-*.zip</code>, <code>hivedeploy.zip</code> or the clonedeploy zip. Those are for other tools. This app needs the <code>.img.xz</code> file.")}
 {f'<p>Current image: <b>{e(img)}</b></p>' if img else ''}
 """, open_=bool(acked) and not img)
 

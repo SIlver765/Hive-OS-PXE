@@ -17,8 +17,8 @@ tests/                        test-server.sh (run on the host machine), pxe-prob
 
 ## Admin UI
 Guide (plain-language step-by-step help with live progress and troubleshooting; opens after first login), Dashboard (live
-server/rig status, per-rig flash progress, setup checklist), Rigs (add, import, edit, reflash, filter), Groups, Image (download by
-link or drag-and-drop upload), Settings (IP override, port status, dnsmasq restart, config export).
+server/rig status, per-rig flash progress, setup checklist), Rigs (add, import, edit, reflash, filter), Groups, Image (one-click
+"Download latest stable" from Hive's site, plus download by link or drag-and-drop upload), Settings (IP override, port status, dnsmasq restart, config export).
 There is no login by default; a password is optional and set by the user in Settings (a `reset-password` file in the data folder removes it). All input is validated because values
 land in `rig.conf` / `flash.env`, which are sourced as shell. Pages refresh every 3 s; works on phones, light and dark.
 

@@ -51,3 +51,9 @@
 - Spell the account "Silver765". Commit as the GitHub no-reply address
   (116761694+SIlver765@users.noreply.github.com); never put the user's personal email in commits.
 - Confirm before publishing or pushing anything new, and report failures honestly.
+
+## Lessons learned
+- Outgoing downloads must send a browser-like User-Agent. download.hiveos.farm (Cloudflare) answers Python's default
+  client with HTTP 403. Test every external URL the app fetches against the real host, not just curl.
+- Never type typographic characters (ellipsis, smart quotes) into patch scripts that write source files on Windows;
+  they get written in the ANSI code page and break Python's UTF-8 source decoding. Keep sources ASCII.

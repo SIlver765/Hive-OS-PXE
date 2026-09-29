@@ -127,7 +127,7 @@ JS = """
  function tick(){ if(document.hidden||!live)return; var a=document.activeElement;
   fetch(location.href,{credentials:'same-origin'}).then(function(r){return r.ok?r.text():null}).then(function(t){
    if(!t)return; var n=new DOMParser().parseFromString(t,'text/html').getElementById('live');
-   if(n&&n.innerHTML!==live.innerHTML&&!(a&&live.contains(a)&&/INPUT|SELECT|TEXTAREA/.test(a.tagName)))live.innerHTML=n.innerHTML;}).catch(function(){});}
+   if(n&&n.innerHTML!==live.innerHTML&&!(a&&live.contains(a)&&/INPUT|SELECT|TEXTAREA/.test(a.tagName))){var op=[].map.call(live.querySelectorAll('details'),function(d){return d.open});live.innerHTML=n.innerHTML;live.querySelectorAll('details').forEach(function(d,i){if(op[i])d.open=true});}}).catch(function(){});}
  if(live)setInterval(tick,3000);
  document.addEventListener('click',function(ev){
   var c=ev.target.closest('[data-copy]');if(c){navigator.clipboard&&navigator.clipboard.writeText(c.dataset.copy);var o=c.innerHTML;c.textContent='Copied';setTimeout(function(){c.innerHTML=o},1200);}
@@ -218,4 +218,8 @@ CSS += """
 .gq{border-top:1px solid var(--bd);margin:0}.gq:first-of-type{border:0}.gq summary{padding:12px 0;cursor:pointer;font-weight:600}.gq .gb{padding:0 0 12px 0}
 .gl dt{font-weight:650;margin-top:10px}.gl dd{margin:2px 0 0;color:var(--mut)}
 @media(max-width:820px){.gb{padding-left:20px}}
+"""
+
+CSS += """
+.hero{display:flex;gap:16px;align-items:center;flex-wrap:wrap}.hero .grow{flex:1;min-width:240px;overflow-wrap:anywhere}
 """

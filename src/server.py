@@ -6,7 +6,7 @@ Stdlib only. Two listeners:
   PUBLIC_PORT (8382) unauthenticated, LAN-facing: iPXE script, netboot files, image, per-rig config
 """
 import hashlib, hmac, html, io, json, os, re, secrets, shutil, socket, subprocess, tarfile
-import ipaddress, threading, time, urllib.request, tempfile
+import email.utils, ipaddress, threading, time, urllib.request, tempfile
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http.cookies import SimpleCookie
@@ -260,13 +260,62 @@ def tcp_ok(port):
 
 
 # ---------- image download ----------
-def fetch_image(url):
+# Hive's download site is behind Cloudflare, which answers Python's default client with 403. Identify ourselves like a browser.
+UA = "Mozilla/5.0 (compatible; HiveOSPXE/1.0; +https://github.com/Silver765/Hive-OS-PXE)"
+HIVE_BASE = "https://download.hiveos.farm/"
+hive = {"ts": 0.0, "items": [], "err": "", "loading": False}   # cached list of images published by Hive
+
+
+def parse_hive_list(page):
+    """Read the file table on download.hiveos.farm. Returns images newest first."""
+    items = []
+    for row in re.findall(r"<tr>(.*?)</tr>", page, re.S):
+        m = re.search(r'href="([^"]*)"', row, re.S)
+        if not m: continue
+        href = re.sub(r"\s+", "", m.group(1))          # the site puts line breaks inside some links
+        if not href.endswith(".img.xz"): continue
+        cells = [re.sub(r"<[^>]+>|\s+", " ", c).strip() for c in re.findall(r"<td>(.*?)</td>", row, re.S)]
+        size = cells[1] if len(cells) > 1 else ""
+        try: when = email.utils.parsedate_to_datetime(cells[2]).timestamp()
+        except Exception: when = 0.0
+        file = os.path.basename(href)
+        channel = "stable" if "-stable" in file else "beta" if "-beta" in file else "release"
+        items.append({"file": file, "url": HIVE_BASE + href, "size": size.replace("G", " GB").replace("M", " MB"), "ts": when, "channel": channel})
+    items.sort(key=lambda i: i["ts"], reverse=True)
+    return items
+
+def _hive_load():
+    try:
+        req = urllib.request.Request(HIVE_BASE, headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=15) as r: items = parse_hive_list(r.read().decode("utf-8", "replace"))
+        if not items: raise ValueError("no Hive OS images found on the page")
+        hive.update(items=items, err="", ts=time.time())
+    except Exception as ex:
+        hive.update(err=str(ex)[:160], ts=time.time())
+    finally:
+        hive["loading"] = False
+
+def hive_refresh(force=False):
+    """Start a background refresh if the cached list is stale (30 min, or 1 min after a failure)."""
+    with lock:
+        if hive["loading"]: return
+        age = time.time() - hive["ts"]
+        if not force and ((hive["items"] and not hive["err"] and age < 1800) or (hive["err"] and age < 60)): return
+        hive["loading"] = True
+    threading.Thread(target=_hive_load, daemon=True).start()
+
+def newest_of(channel_ok):
+    return next((i for i in hive["items"] if channel_ok(i["channel"])), None)
+
+
+def fetch_image(url, select=False):
     name = safe_image_name(urlparse(url).path)
     if not name: return
+    if fetches.get(name, {}).get("status") == "downloading": return
     dst = os.path.join(IMAGES, name)
     st = fetches[name] = {"status": "downloading", "done": 0, "total": 0, "err": ""}
     try:
-        with urllib.request.urlopen(url, timeout=30) as r, open(dst + ".part", "wb") as f:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=30) as r, open(dst + ".part", "wb") as f:
             st["total"] = int(r.headers.get("Content-Length", 0))
             if st["total"] and st["total"] > shutil.disk_usage(IMAGES).free: raise OSError("not enough free disk space")
             while chunk := r.read(1 << 20):
@@ -274,7 +323,7 @@ def fetch_image(url):
         os.replace(dst + ".part", dst)
         st["status"] = "done"
         with lock:
-            if not cfg["image"]: cfg["image"] = name; save(cfg)
+            if select or not cfg["image"]: cfg["image"] = name; save(cfg)
     except Exception as ex:
         st.update(status="failed", err=str(ex))
         try: os.remove(dst + ".part")
@@ -409,6 +458,54 @@ def p_groups(sid, q):
 "Auto" disk picks the smallest internal disk of 7 GB or more.</p>"""
     return L(sid, "Groups", body, "groups", q, sub="Network and Hive account settings applied to rigs")
 
+def hive_card(sid):
+    hive_refresh()
+    items, err, loading = hive["items"], hive["err"], hive["loading"]
+    have = set(image_files())
+    busy = {n for n, st in fetches.items() if st["status"] == "downloading"}
+
+    def action(it, label, primary=True):
+        n = safe_image_name(it["file"])
+        if n in busy: return '<span class="badge b-flashing">Downloading</span>'
+        if n in have: return '<span class="badge b-done">Downloaded</span>'
+        return (f'<form class="inl" method="post" action="/images/get">{csrf(sid)}<input type="hidden" name="file" value="{e(it["file"])}">'
+                f'<button class="{"" if primary else "g"}">{icon("download", 15)}{label}</button></form>')
+
+    def when(it): return time.strftime("%d %b %Y", time.localtime(it["ts"])) if it["ts"] else ""
+
+    stable = newest_of(lambda c: c == "stable")
+    newest = newest_of(lambda c: c != "beta")
+    body = ""
+    if stable:
+        body += (f'<div class="hero"><div class="grow"><b>Latest stable (recommended)</b><div class="mut mono" style="margin-top:2px">{e(stable["file"])}</div>'
+                 f'<div class="hint" style="margin:2px 0 0">{e(stable["size"])} &middot; {when(stable)}</div></div><div>{action(stable, "Download latest stable")}</div></div>')
+    if newest and (not stable or newest["file"] != stable["file"]):
+        body += (f'<div class="hero" style="margin-top:14px"><div class="grow"><b>Newest available</b> <span class="badge b-warn">not marked stable</span>'
+                 f'<div class="mut mono" style="margin-top:2px">{e(newest["file"])}</div><div class="hint" style="margin:2px 0 0">{e(newest["size"])} &middot; {when(newest)}. '
+                 f'Newer than the stable one, but Hive has not labelled it stable. Try the stable one first if unsure.</div></div><div>{action(newest, "Download newest", False)}</div></div>')
+    if items:
+        rows = ""
+        for i in items:
+            tag = {"stable": '<span class="badge b-done">Stable</span>', "beta": '<span class="badge b-warn">Beta</span>'}.get(i["channel"], "")
+            rows += f'<tr><td class="mono">{e(i["file"])}</td><td>{e(i["size"])}</td><td>{when(i)}</td><td>{tag}</td><td class="r">{action(i, "Download", False)}</td></tr>'
+        body += (f'<details><summary>All versions ({len(items)})</summary><div class="tw"><table><thead><tr><th>File<th>Size<th>Date<th><th></tr></thead>'
+                 f'<tbody>{rows}</tbody></table></div></details>')
+    if loading and not items: body += '<p class="hint">Checking Hive\'s download site...</p>'
+    if err and not items:
+        body += (f'<div class="banner err">{icon("alert")}<span>Could not reach Hive\'s download site ({e(err)}). Use the manual steps below, or try again.</span></div>')
+    foot = (f'<form class="inl" method="post" action="/images/refresh">{csrf(sid)}<button class="g">{icon("refresh", 15)}Check again</button></form>'
+            f'<span class="hint" style="margin-left:10px">{("Checked a moment ago" if time.time() - hive["ts"] < 60 else "Checked " + ago(hive["ts"])) if hive["ts"] else ""}</span>')
+    steps = f"""<details {"open" if (err and not items) else ""}><summary>Where to find it yourself</summary><div style="margin-top:8px">
+<ol style="margin:.4em 0;padding-left:1.3em"><li>Open <a href="https://download.hiveos.farm/" target="_blank" rel="noopener">download.hiveos.farm</a> in your browser (the install help is at
+<a href="https://hiveon.com/install/" target="_blank" rel="noopener">hiveon.com/install</a>).</li>
+<li>Look for files that start with <code>hiveos-</code> and end with <code>.img.xz</code>. <b>Do not unzip them.</b></li>
+<li>Pick one with <code>stable</code> in the name (safest). A file with no label, like <code>hiveos-0.6-230-jammy@260708.img.xz</code>, is newer but not marked stable. <code>beta</code> ones are for testing.
+The word after the number is the Ubuntu version: <code>jammy</code> is the usual one, <code>focal</code> is older, <code>noble</code> is newest.</li>
+<li>Right-click the file and choose <b>Copy link address</b>. Paste it into <b>Download from a link</b> below, or save the file and drag it into <b>Upload a file</b>.</li></ol>
+<p class="hint">Ignore <code>hive-flasher-*.zip</code> (USB writer), <code>hivedeploy.zip</code>, <code>hiveos-stable-clonedeploy-image.zip</code> and <code>.torrent</code> files. This app needs the <code>.img.xz</code> file.</p></div></details>"""
+    return f'<div class="card"><h2>Get Hive OS</h2><p class="hint" style="margin-top:0">Let the app fetch it from Hive\'s download site, so you do not have to hunt for the file.</p>{body}<div style="margin-top:12px">{foot}</div>{steps}</div>'
+
+
 def p_images(sid, q):
     rows = ""
     for f in image_files():
@@ -426,7 +523,7 @@ def p_images(sid, q):
         elif s["status"] == "failed":
             prog += (f'<div class="banner err">{icon("alert")}{e(n)}: {e(s["err"])}<form class="inl" method="post" action="/images/dismiss" style="margin-left:auto">{csrf(sid)}'
                      f'<input type="hidden" name="file" value="{e(n)}"><button class="g">Dismiss</button></form></div>')
-    body = f"""<div id="live">{prog}<div class="card">{table}</div></div>
+    body = f"""<div id="live">{hive_card(sid)}{prog}<div class="card">{table}</div></div>
 <div class="card"><h2>Download from a link</h2><form method="post" action="/images/fetch">{csrf(sid)}<div class="fg">
 <label class="wide">Image URL (.img.xz, .img.gz, .img.zst or .img)<input name="url" required placeholder="https://.../hiveos-xxxx.img.xz"></label>
 <div><button>{icon("download", 15)}Download</button></div></div></form>
@@ -707,6 +804,16 @@ class Admin(Base):
                         if r["group"] not in cfg["groups"]: r["group"] = next(iter(cfg["groups"]))
                     save(cfg); return self.go("/groups", "ok", f"Deleted group {n}")
                 return self.go("/groups", "err", "Cannot delete the last group")
+            if p == "/images/refresh":
+                hive_refresh(True); return self.go("/images", "ok", "Checking Hive's download site...")
+            if p == "/images/get":
+                it = next((x for x in hive["items"] if x["file"] == f.get("file")), None)
+                if not it: return self.go("/images", "err", "That version is no longer in the list. Press Check again.")
+                name = safe_image_name(it["file"])
+                if name in image_files():
+                    cfg["image"] = name; save(cfg); return self.go("/images", "ok", f"Already downloaded. Now using {name}")
+                threading.Thread(target=fetch_image, args=(it["url"], True), daemon=True).start()
+                return self.go("/images", "ok", f"Downloading {it['file']}. This page updates by itself.")
             if p == "/images/select":
                 fn = os.path.basename(f.get("file", ""))
                 if os.path.isfile(os.path.join(IMAGES, fn)): cfg["image"] = fn; save(cfg); return self.go("/images", "ok", f"Now flashing {fn}")
@@ -758,6 +865,7 @@ def main():
         print("password removed via reset-password file", flush=True)
     for r in cfg["rigs"].values():   # a rig left "flashing" across a restart is treated as failed
         if r.get("state") == "flashing" and not r.get("seen_ts"): r["state"] = "pending"
+    hive_refresh()
     threading.Thread(target=serve, args=(Public, PUBLIC_PORT), daemon=True).start()
     run_dnsmasq()
     threading.Thread(target=supervise, daemon=True).start()
