@@ -8,7 +8,7 @@ services:
       PROXY_AUTH_ADD: "false"          # the app has its own login with forced password change
 
   server:
-    image: ghcr.io/silver765/hive-os-pxe:v1.0-Dev
+    image: ghcr.io/silver765/hive-os-pxe@sha256:a01cdc282f491c56d1f0b62c771c4566b63602dd12045e1850f66e8fcda1ed38
     restart: on-failure
     network_mode: host                 # PXE needs L2 broadcast: UDP 67 (proxyDHCP), 69 (TFTP), 4011 (PXE)
     cap_add:
