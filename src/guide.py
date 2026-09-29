@@ -19,19 +19,19 @@ def guide_body(ip, iface, up, img, has_farm, n_rigs, any_seen, acked, n_done):
 This app lets your rigs <b>install Hive OS by themselves over your home network</b>. You turn a rig on, it asks this server for
 Hive OS, installs it on its own disk, and joins your Hive account. Do it once for one rig or for fifty.</p>
 <p><b>What you need:</b></p><ul>
-<li>This Umbrel, connected to your router with a network cable (Wi-Fi is not recommended).</li>
+<li>This machine (the computer running this app), connected to your router with a network cable (Wi-Fi is not recommended).</li>
 <li>Each mining rig connected to the <b>same router</b> with a network cable, and with its own disk (SSD) inside.</li>
 <li>A free Hive OS account with a farm created.</li>
 <li>A keyboard and screen for each rig, <b>once</b>, to change one setting in its BIOS (Step 5).</li></ul>
 {warn("<b>Important:</b> a rig that is flashed has its disk <b>erased</b>. Only rigs you add to the Rigs list are ever touched. Other computers on your network are ignored.")}</div>"""
 
-    s1 = _step(1, "Give this Umbrel a permanent address", acked, f"""
+    s1 = _step(1, "Give this machine a permanent address", acked, f"""
 <p>Rigs find this server by its address on your network. Routers sometimes hand out a new address after a restart, which would make the
-rigs look in the wrong place. Ask your router to always give this Umbrel the <b>same</b> address:</p>
-<p>This Umbrel's address right now: <b class="mono">{e(ip)}</b> <button class="copy" data-copy="{e(ip)}" title="Copy">{icon("copy", 14)}</button></p>
+rigs look in the wrong place. Ask your router to always give this machine the <b>same</b> address:</p>
+<p>This machine's address right now: <b class="mono">{e(ip)}</b> <button class="copy" data-copy="{e(ip)}" title="Copy">{icon("copy", 14)}</button></p>
 <ol><li>Open your router's settings page in a browser (often <code>192.168.1.1</code> or <code>192.168.0.1</code>; the address and password are usually on a sticker on the router).</li>
 <li>Look for a menu called <b>DHCP reservation</b>, <b>Address reservation</b>, <b>Static lease</b> or <b>Reserved IP</b>.</li>
-<li>Choose this Umbrel from the list of devices (or type its address above) and save.</li>
+<li>Choose this machine from the list of devices (or type its address above) and save.</li>
 <li>Come back here and press <b>"I've done this"</b> on the Dashboard.</li></ol>
 {tip("Router menus look different on every brand. If you cannot find it, search the internet for <i>your router brand + DHCP reservation</i>.")}
 """, open_=not acked)
@@ -106,9 +106,9 @@ If a rig already has Hive OS working and you just want to track it, press <b>Mar
         _faq("The rig got a different network address than I typed",
              "<p>Addresses typed in the Rigs tab are applied when the rig is installed. If you change one later, press <b>Reflash</b> to apply it.</p>"),
         _faq("The Dashboard says Stopped",
-             "<p>Another program on this Umbrel may be using the same network ports. Press <b>Restart dnsmasq</b> in Settings. If it keeps stopping, look at the <b>dnsmasq log</b> at the bottom of the Dashboard and share it when asking for help.</p>"),
+             "<p>Another program on this machine may be using the same network ports. Press <b>Restart dnsmasq</b> in Settings. If it keeps stopping, look at the <b>dnsmasq log</b> at the bottom of the Dashboard and share it when asking for help.</p>"),
         _faq("I forgot my password",
-             "<p>On the Umbrel, delete the file <code>app-data/HiveOSPXE-hive-os-pxe/data/config.json</code> and restart the app. The password goes back to the one shown for this app on your Umbrel. "
+             "<p>On this machine, delete the file <code>app-data/HiveOSPXE-hive-os-pxe/data/config.json</code> and restart the app. The password goes back to the one shown with this app when you installed it. "
              "<b>This also clears your rig list</b>, so download a backup first from Settings when you can.</p>"),
     ]) + "</div>"
 

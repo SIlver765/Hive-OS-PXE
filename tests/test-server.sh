@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Run ON the Umbrel host (ssh umbrel@umbrel.local) after installing the app.
+# Run ON the machine hosting the app (over SSH) after installing it.
 # Verifies: static-ish address, host networking, listening PXE ports, TFTP + HTTP payloads.
 # From another LAN machine, additionally run:  sudo python3 pxe-probe.py 0   (and 7)
 set -u; APP=HiveOSPXE-hive-os-pxe; pass=0; fail=0
 ok(){ echo "PASS  $*"; pass=$((pass+1)); }; bad(){ echo "FAIL  $*"; fail=$((fail+1)); }
-IP=$(ip -4 route get 1.1.1.1 | sed -n 's/.* src \([0-9.]*\).*/\1/p'); echo "Umbrel IP: $IP"
+IP=$(ip -4 route get 1.1.1.1 | sed -n 's/.* src \([0-9.]*\).*/\1/p'); echo "Server IP: $IP"
 ip -4 addr show | grep -q "dynamic" && echo "NOTE  address is DHCP-assigned: make sure the router has a reservation for $IP"
 
 C=$(docker ps --format '{{.Names}}' | grep "${APP}_server" | head -1)
@@ -14,7 +14,7 @@ C=$(docker ps --format '{{.Names}}' | grep "${APP}_server" | head -1)
 listen(){ ss -H -lnu "sport = :$1" | grep -q . ; }
 for p in 67 69 4011; do listen $p && ok "UDP $p listening" || bad "UDP $p not listening (another DHCP/TFTP service on this host?)"; done
 for p in 8380 8381 8382; do ss -H -lnt "sport = :$p" | grep -q . && ok "TCP $p listening" || bad "TCP $p not listening"; done
-ss -H -lnt "sport = :80" | grep -q . && echo "INFO  TCP 80 is used by the Umbrel dashboard (expected, we do not use it)"
+ss -H -lnt "sport = :80" | grep -q . && echo "INFO  TCP 80 is used by the host dashboard (expected, we do not use it)"
 
 T=$(mktemp -d)
 curl -s --max-time 10 -o "$T/k" "tftp://$IP/undionly.kpxe" && [ -s "$T/k" ] && ok "TFTP undionly.kpxe ($(stat -c%s "$T/k") B)" || bad "TFTP undionly.kpxe"

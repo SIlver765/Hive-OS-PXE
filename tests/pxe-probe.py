@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Broadcast a PXE DHCPDISCOVER (option 60 PXEClient) and print proxyDHCP replies.
-Run on any Linux box on the same LAN as the Umbrel: sudo python3 pxe-probe.py [arch]   (arch 0=BIOS, 7=UEFI x64)
-A working proxy answers with a DHCPOFFER whose siaddr = Umbrel IP and file = undionly.kpxe / ipxe.efi."""
+Run on any Linux box on the same LAN as this machine: sudo python3 pxe-probe.py [arch]   (arch 0=BIOS, 7=UEFI x64)
+A working proxy answers with a DHCPOFFER whose siaddr = server IP and file = undionly.kpxe / ipxe.efi."""
 import os, socket, struct, sys, time
 arch = int(sys.argv[1]) if len(sys.argv) > 1 else 0
 mac = bytes.fromhex("02deadbeef01"); xid = os.urandom(4)

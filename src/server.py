@@ -2,7 +2,7 @@
 """Hive OS PXE deploy server: admin UI, rig-facing HTTP endpoints, dnsmasq supervisor.
 
 Stdlib only. Two listeners:
-  ADMIN_PORT  (8381) admin UI, session login, forced password change (behind Umbrel app_proxy on 8380)
+  ADMIN_PORT  (8381) admin UI, session login, forced password change (behind the platform app proxy on 8380)
   PUBLIC_PORT (8382) unauthenticated, LAN-facing: iPXE script, netboot files, image, per-rig config
 """
 import hashlib, hmac, html, io, json, os, re, secrets, shutil, socket, subprocess, tarfile
@@ -425,13 +425,13 @@ def p_images(sid, q):
 <div><button>{icon("download", 15)}Download</button></div></div></form>
 <p class="hint">Copy the link from the Hive OS download page. The file is stored on this server and streamed to rigs, so a fast disk and LAN help.</p></div>
 <div class="card"><h2>Upload a file</h2><div class="dz" id="dz" data-csrf="{sessions[sid]}">{icon("upload", 22)}<div id="upst">Drop an image here, or click to choose a file</div></div>
-<input type="file" id="file" hidden accept=".img,.xz,.gz,.zst"><p class="hint">You can also copy files into <code>app-data/HiveOSPXE-hive-os-pxe/data/images/</code> on the Umbrel.</p></div>"""
+<input type="file" id="file" hidden accept=".img,.xz,.gz,.zst"><p class="hint">You can also copy files into <code>app-data/HiveOSPXE-hive-os-pxe/data/images/</code> on this machine.</p></div>"""
     return L(sid, "Image", body, "image", q, sub="The Hive OS image flashed onto rigs")
 
 def p_settings(sid, q):
     ip, iface = detect_net()
     ports = [("67", "UDP", "proxyDHCP (PXE announce)", None), ("69", "UDP", "TFTP (iPXE boot files)", None), ("4011", "UDP", "PXE boot server", None),
-             (str(ADMIN_PORT), "TCP", "Admin UI (behind Umbrel port 8380)", tcp_ok(ADMIN_PORT)), (str(PUBLIC_PORT), "TCP", "Rig files: boot script, kernel, image", tcp_ok(PUBLIC_PORT))]
+             (str(ADMIN_PORT), "TCP", "Admin UI (this page)", tcp_ok(ADMIN_PORT)), (str(PUBLIC_PORT), "TCP", "Rig files: boot script, kernel, image", tcp_ok(PUBLIC_PORT))]
     prow = "".join(f'<tr><td class="mono">{p}</td><td>{pr}</td><td>{d}</td><td>{"" if ok is None else badge("done" if ok else "failed").replace("Deployed", "Listening").replace("Failed", "Down")}</td></tr>' for p, pr, d, ok in ports)
     body = f"""<div class="card"><h2>Network</h2><form method="post" action="/settings">{csrf(sid)}<div class="fg">
 <label>Server IP override<input name="server_ip" value="{e(cfg.get('server_ip', ''))}" placeholder="auto: {e(ip)}"></label>
@@ -440,7 +440,7 @@ def p_settings(sid, q):
 <b>{"running" if dnsmasq_up() else "stopped"}</b>.</p>
 <form method="post" action="/settings/restart">{csrf(sid)}<button class="g">{icon("refresh", 15)}Restart dnsmasq</button></form></div>
 <div class="card"><h2>Ports</h2><div class="tw"><table><thead><tr><th>Port<th>Proto<th>Purpose<th></tr></thead><tbody>{prow}</tbody></table></div>
-<p class="hint">UDP listeners cannot be probed from inside the app. Verify them with <code>tests/test-umbrel.sh</code>. Rig file port {PUBLIC_PORT} has no login by design: keep it on your LAN.</p></div>
+<p class="hint">UDP listeners cannot be probed from inside the app. Verify them with <code>tests/test-server.sh</code>. Rig file port {PUBLIC_PORT} has no login by design: keep it on your LAN.</p></div>
 <div class="card"><h2>Backup</h2><p class="hint" style="margin-top:0">Download rigs, groups and settings as JSON (password hash excluded).</p>
 <a class="btn g" href="/settings/export">{icon("download", 15)}Export configuration</a></div>"""
     return L(sid, "Settings", body, "settings", q, sub="Network detection, ports and backup")
@@ -461,7 +461,7 @@ def login_page(msg=""):
 {f'<div class="banner err">{e(msg)}</div>' if msg else ''}
 <label>Password<input type="password" name="pw" autofocus autocomplete="current-password"></label>
 <button style="justify-content:center">Log in</button></div></form></div>
-<p class="hint" style="text-align:center">First time? Use the password shown for this app in Umbrel.</p>""")
+<p class="hint" style="text-align:center">First time? Use the password shown with this app when you installed it.</p>""")
 
 
 def p_guide(sid, q):
