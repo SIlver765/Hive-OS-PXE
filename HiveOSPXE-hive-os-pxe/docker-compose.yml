@@ -2,7 +2,7 @@ version: "3.7"
 
 services:
   server:
-    image: ghcr.io/silver765/hive-os-pxe@sha256:7fd2698b2492c2e27a1f900358a0c77f3741539435b1b924d90ffd8daa7d5064
+    image: ghcr.io/silver765/hive-os-pxe@sha256:f192f1acfad0f10c65122d8c39fa2d7c432369fdbddb356d78e8bd9cf1e6a530
     restart: on-failure
     network_mode: host                 # PXE needs L2 broadcast: UDP 67 (proxyDHCP), 69 (TFTP), 4011 (PXE)
     cap_add:
