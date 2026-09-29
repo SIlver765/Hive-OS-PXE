@@ -29,7 +29,9 @@
 ## Release flow (one direction only: app repo -> store)
 1. Change code only in the app's own repo. The store copy is overwritten hourly by
    `scripts/sync-apps.sh`, so never hand-edit files inside the store repo.
-2. Bump `version` in umbrel-app.yml (Dev -> Dev2 -> Dev3). Beware string compares: Dev9 vs Dev10
+2. Bump `version` in umbrel-app.yml LAST: in the same commit that pins the new image digest (step 4), never
+   before. A store snapshot taken between the two shows the new version with the old image, and the platform
+   then never offers the fix because it already believes it is on the new version. (Dev -> Dev2 -> Dev3). Beware string compares: Dev9 vs Dev10
    sorts wrong, so prefer zero-padded or a clearly higher string.
 3. Push a git tag v<version>. CI builds and pushes ghcr.io/silver765/<image>:<tag>. Wait for the run
    to succeed. Check the package is public.
