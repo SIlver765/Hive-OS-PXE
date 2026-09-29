@@ -163,18 +163,15 @@ def head(title):
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<base href="{base()}"><title>{e(title)} - Hive OS PXE by Silver</title><link rel="icon" href="{FAVICON}"><style>{CSS}</style></head>')
 
-def layout(title, body, csrf, active, sub="", actions="", msg=None, forced=False):
+def layout(title, body, csrf, active, sub="", actions="", msg=None, show_logout=False):
     """msg = (kind, text) where kind in ok/err/warn."""
-    nav = ""
-    if not forced:
-        nav = "".join(f'<a href="{h}" class="{"on" if k == active else ""}">{icon(k)}{l}</a>' for h, k, l in NAV)
-    nav += f'<a href="/password" class="{"on" if active == "key" else ""}">{icon("key")}Password</a>' if not forced else ""
+    nav = "".join(f'<a href="{h}" class="{"on" if k == active else ""}">{icon(k)}{l}</a>' for h, k, l in NAV)
     banner = ""
     if msg:
         k, t = msg
         banner = f'<div class="banner {"ok" if k == "ok" else "err" if k == "err" else "warn"}" data-auto="{1 if k == "ok" else ""}">{icon("check" if k == "ok" else "alert")}{e(t)}</div>'
     logout = (f'<form method="post" action="/logout"><input type="hidden" name="csrf" value="{csrf}">'
-              f'<button class="nav">{icon("logout")}Log out</button></form>')
+              f'<button class="nav">{icon("logout")}Log out</button></form>') if show_logout else ""
     out = (head(title) + f'<body><div class="app"><aside><div class="brand"><b>PXE</b><span>Hive OS PXE<small>by Silver</small></span></div>'
             f'{nav}<span class="sp"></span>{logout}</aside><main><div class="ph"><div><h1>{e(title)}</h1>'
             f'{f"<p class=sub>{sub}</p>" if sub else ""}</div><div>{actions}</div></div>{banner}{body}</main></div>'

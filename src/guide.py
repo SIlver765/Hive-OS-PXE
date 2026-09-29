@@ -108,14 +108,16 @@ If a rig already has Hive OS working and you just want to track it, press <b>Mar
         _faq("The Dashboard says Stopped",
              "<p>Another program on this machine may be using the same network ports. Press <b>Restart dnsmasq</b> in Settings. If it keeps stopping, look at the <b>dnsmasq log</b> at the bottom of the Dashboard and share it when asking for help.</p>"),
         _faq("I forgot my password",
-             "<p>On this machine, delete the file <code>app-data/HiveOSPXE-hive-os-pxe/data/config.json</code> and restart the app. The password goes back to the one shown with this app when you installed it. "
-             "<b>This also clears your rig list</b>, so download a backup first from Settings when you can.</p>"),
+             "<p>If you set a password in Settings and forgot it, create an empty file named <code>reset-password</code> in this app's data folder "
+             "(<code>app-data/HiveOSPXE-hive-os-pxe/data/</code> on the machine) and restart the app. The password is removed and your rigs and settings are kept. "
+             "You can set a new one in Settings.</p>"),
     ]) + "</div>"
 
     safety = """<div class="card"><h2>Good to know</h2><ul>
 <li><b>Safe by design:</b> only devices in your Rigs list are installed on. Unknown devices always start normally.</li>
 <li><b>Your home router stays in charge.</b> This app never hands out network addresses, so it cannot break your Wi-Fi or internet.</li>
 <li><b>Keep it at home.</b> Never open ports on your router for this app. It is only meant to be used inside your own network.</li>
+<li><b>Password (optional):</b> there is no login by default. To require one, open <a href="/settings">Settings</a> and set a password. You can remove it again any time.</li>
 <li><b>Back up:</b> Settings has an <b>Export configuration</b> button that saves your rigs and groups.</li></ul></div>"""
 
     gloss = """<div class="card"><h2>Words you may see</h2><dl class="gl">

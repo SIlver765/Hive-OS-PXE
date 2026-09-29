@@ -2,7 +2,7 @@
 """Hive OS PXE deploy server: admin UI, rig-facing HTTP endpoints, dnsmasq supervisor.
 
 Stdlib only. Two listeners:
-  ADMIN_PORT  (8380) admin UI, session login, forced password change
+  ADMIN_PORT  (8380) admin UI (password is optional and set by the user in Settings)
   PUBLIC_PORT (8382) unauthenticated, LAN-facing: iPXE script, netboot files, image, per-rig config
 """
 import hashlib, hmac, html, io, json, os, re, secrets, shutil, socket, subprocess, tarfile
@@ -46,12 +46,12 @@ def check_pw(pw, stored):
     salt, _ = stored.split("$", 1)
     return hmac.compare_digest(hash_pw(pw, salt), stored)
 
+def pw_on():
+    return bool(cfg.get("password"))
+
 def default_cfg():
-    initial = os.environ.get("INITIAL_PASSWORD") or secrets.token_urlsafe(9)
-    if not os.environ.get("INITIAL_PASSWORD"):
-        print(f"*** initial admin password: {initial}", flush=True)
     return {
-        "password": hash_pw(initial), "password_changed": False,
+        "password": "",   # empty = no login required; the user can set one in Settings
         "server_ip": "", "image": "",
         "groups": {"default": {"network": "192.168.1.0/24", "gateway": "192.168.1.1", "dns": "",
                                "hive_url": "https://api2.hiveos.farm", "farm_hash": "", "disk": ""}},
@@ -61,7 +61,11 @@ def default_cfg():
 def load():
     os.makedirs(IMAGES, exist_ok=True)
     if os.path.exists(CFG_PATH):
-        with open(CFG_PATH) as f: return json.load(f)
+        with open(CFG_PATH) as f: c = json.load(f)
+        if c.get("password") and not c.get("password_changed"):
+            c["password"] = ""      # older versions generated a password nobody was shown: treat as "no password"
+        c.pop("password_changed", None)
+        return c
     c = default_cfg(); save(c); return c
 
 def save(c):
@@ -280,7 +284,7 @@ def fetch_image(url):
 # ---------- admin pages ----------
 def L(sid, title, body, active, q=None, **kw):
     msg = (q["k"][0], q["m"][0]) if q and "m" in q and "k" in q else None
-    return layout(title, body, sessions[sid], active, msg=msg, **kw)
+    return layout(title, body, sessions[sid], active, msg=msg, show_logout=pw_on(), **kw)
 
 def csrf(sid): return f'<input type="hidden" name="csrf" value="{sessions[sid]}">'
 
@@ -321,7 +325,9 @@ def p_status(sid, q):
     feed = "".join(f'<li><time>{time.strftime("%H:%M:%S", time.localtime(t))}</time><span>{e(x)}</span></li>' for t, x in list(events)[-12:][::-1]) \
         or '<li class="mut">Nothing yet. Reports appear when a rig boots or flashes.</li>'
     lg = "\n".join(list(log_lines)[-60:][::-1]) or "no output yet"
-    body = f"""<div id="live">{warn}
+    nopw = "" if pw_on() else (f'<div class="banner warn">{icon("alert")}<span>Password protection is off, so anyone on your network can open this page. '
+                               f'<a href="/settings">Set a password in Settings</a> if you want one.</span></div>')
+    body = f"""<div id="live">{warn}{nopw}
 <div class="grid">
  <div class="card stat"><div class="k">{icon("server", 15)} Deploy server</div><div class="v">{badge("done" if up else "failed").replace("Deployed", "Running").replace("Failed", "Stopped")}</div>
   <div class="s"><span class="mono">{e(ip)}</span> on {e(iface or "?")} <button class="copy" data-copy="{e(ip)}" title="Copy">{icon("copy", 14)}</button></div></div>
@@ -429,12 +435,32 @@ def p_images(sid, q):
 <input type="file" id="file" hidden accept=".img,.xz,.gz,.zst"><p class="hint">You can also copy files into <code>app-data/HiveOSPXE-hive-os-pxe/data/images/</code> on this machine.</p></div>"""
     return L(sid, "Image", body, "image", q, sub="The Hive OS image flashed onto rigs")
 
+def security_card(sid):
+    if pw_on():
+        return f"""<div class="card"><h2>Password <span class="badge b-done">On</span></h2>
+<p class="hint" style="margin-top:0">A password is required to open this page.</p>
+<form method="post" action="/settings/password">{csrf(sid)}<div class="fg">
+<label>Current password<input type="password" name="old" required autocomplete="current-password"></label>
+<label>New password (8+ characters)<input type="password" name="new" required minlength="8" autocomplete="new-password"></label>
+<label>Repeat new password<input type="password" name="new2" required autocomplete="new-password"></label>
+<div><button>Change password</button></div></div></form>
+<form method="post" action="/settings/password/remove" style="margin-top:16px" data-confirm="Turn password protection off?">{csrf(sid)}<div class="fg">
+<label>Current password<input type="password" name="old" required autocomplete="current-password"></label>
+<div><button class="d">Remove password</button></div></div></form></div>"""
+    return f"""<div class="card"><h2>Password <span class="badge b-skip">Off</span></h2>
+<p class="hint" style="margin-top:0">Right now anyone on your network who can reach this page can change settings and see your rig list.
+Set a password if you want a login. You can turn it off again later.</p>
+<form method="post" action="/settings/password">{csrf(sid)}<div class="fg">
+<label>New password (8+ characters)<input type="password" name="new" required minlength="8" autocomplete="new-password"></label>
+<label>Repeat password<input type="password" name="new2" required autocomplete="new-password"></label>
+<div><button>Set password</button></div></div></form></div>"""
+
 def p_settings(sid, q):
     ip, iface = detect_net()
     ports = [("67", "UDP", "proxyDHCP (PXE announce)", None), ("69", "UDP", "TFTP (iPXE boot files)", None), ("4011", "UDP", "PXE boot server", None),
              (str(ADMIN_PORT), "TCP", "Admin UI (this page)", tcp_ok(ADMIN_PORT)), (str(PUBLIC_PORT), "TCP", "Rig files: boot script, kernel, image", tcp_ok(PUBLIC_PORT))]
     prow = "".join(f'<tr><td class="mono">{p}</td><td>{pr}</td><td>{d}</td><td>{"" if ok is None else badge("done" if ok else "failed").replace("Deployed", "Listening").replace("Failed", "Down")}</td></tr>' for p, pr, d, ok in ports)
-    body = f"""<div class="card"><h2>Network</h2><form method="post" action="/settings">{csrf(sid)}<div class="fg">
+    body = f"""{security_card(sid)}<div class="card"><h2>Network</h2><form method="post" action="/settings">{csrf(sid)}<div class="fg">
 <label>Server IP override<input name="server_ip" value="{e(cfg.get('server_ip', ''))}" placeholder="auto: {e(ip)}"></label>
 <div><button>Save &amp; restart dnsmasq</button></div></div></form>
 <p class="hint">Detected {e(ip)} on {e(iface or "?")}. Only override this if detection picks the wrong address. dnsmasq is
@@ -444,25 +470,14 @@ def p_settings(sid, q):
 <p class="hint">UDP listeners cannot be probed from inside the app. Verify them with <code>tests/test-server.sh</code>. Rig file port {PUBLIC_PORT} has no login by design: keep it on your LAN.</p></div>
 <div class="card"><h2>Backup</h2><p class="hint" style="margin-top:0">Download rigs, groups and settings as JSON (password hash excluded).</p>
 <a class="btn g" href="/settings/export">{icon("download", 15)}Export configuration</a></div>"""
-    return L(sid, "Settings", body, "settings", q, sub="Network detection, ports and backup")
-
-def p_password(sid, q, msg=None):
-    forced = not cfg["password_changed"]
-    body = f"""{"<div class=banner style=background:var(--warnbg);color:var(--warn)>" + icon("alert") + "Choose a new password to continue.</div>" if forced else ""}
-<div class="card" style="max-width:460px"><form method="post" action="/password">{csrf(sid)}<div style="display:grid;gap:14px">
-<label>Current password<input type="password" name="old" required autocomplete="current-password"></label>
-<label>New password (8+ characters)<input type="password" name="new" required minlength="8" autocomplete="new-password"></label>
-<label>Repeat new password<input type="password" name="new2" required autocomplete="new-password"></label>
-<div><button>Change password</button></div></div></form></div>"""
-    return layout("Change password", body, sessions[sid], "key", msg=msg, forced=forced,
-                  sub="Required on first login" if forced else "")
+    return L(sid, "Settings", body, "settings", q, sub="Password, network detection, ports and backup")
 
 def login_page(msg=""):
     return bare("Log in", f"""<div class="card"><form method="post" action="/login"><div style="display:grid;gap:14px">
 {f'<div class="banner err">{e(msg)}</div>' if msg else ''}
 <label>Password<input type="password" name="pw" autofocus autocomplete="current-password"></label>
 <button style="justify-content:center">Log in</button></div></form></div>
-<p class="hint" style="text-align:center">First time? Use the password shown with this app when you installed it.</p>""")
+<p class="hint" style="text-align:center">Forgot it? Create an empty file named <code>reset-password</code> in the app's data folder and restart the app.</p>""")
 
 
 def p_guide(sid, q):
@@ -481,6 +496,8 @@ class Base(BaseHTTPRequestHandler):
     def send(self, code, body=b"", ctype="text/html; charset=utf-8", headers=None):
         self.send_response(code); self.send_header("Content-Type", ctype); self.send_header("Content-Length", str(len(body)))
         for k, v in (headers or {}).items(): self.send_header(k, v)
+        ck = getattr(self, "_cookie", None)
+        if ck and "Set-Cookie" not in (headers or {}): self.send_header("Set-Cookie", ck)
         self.end_headers()
         if self.command != "HEAD": self.wfile.write(body)
 
@@ -539,20 +556,28 @@ class Admin(Base):
     def session(self):
         c = SimpleCookie(self.headers.get("Cookie", ""))
         sid = c["sid"].value if "sid" in c else None
-        return sid if sid in sessions else None
+        if sid in sessions: return sid
+        if not pw_on():
+            # no password: no login, but every page still gets a session so forms keep their CSRF token
+            sid = secrets.token_urlsafe(24); sessions[sid] = secrets.token_urlsafe(16)
+            while len(sessions) > 500: sessions.pop(next(iter(sessions)))
+            self._cookie = f"sid={sid}; HttpOnly; SameSite=Strict; Path=/"
+            return sid
+        return None
 
     def form(self):
         n = int(self.headers.get("Content-Length", 0))
         return {k: v[0] for k, v in parse_qs(self.rfile.read(n).decode()).items()}
 
     def do_GET(self):
+        self._cookie = None
         self.path, _p0 = app_path(self.path); _ui.set_base(rel_base(_p0))
         u = urlparse(self.path); q = parse_qs(u.query); p = u.path
-        if p == "/login": return self.send(200, login_page())
+        if p == "/login": return self.send(200, login_page()) if pw_on() else self.go("/")
         sid = self.session()
         if not sid: return self.go("/login")
-        if not cfg["password_changed"] and p != "/password": return self.go("/password")
-        routes = {"/": p_status, "/rigs": p_rigs, "/groups": p_groups, "/images": p_images, "/settings": p_settings, "/password": p_password, "/guide": p_guide}
+        if p == "/password": return self.go("/settings")
+        routes = {"/": p_status, "/rigs": p_rigs, "/groups": p_groups, "/images": p_images, "/settings": p_settings, "/guide": p_guide}
         if p == "/api/status":
             return self.send(200, json.dumps({"dnsmasq": dnsmasq_up(), "rigs": cfg["rigs"], "image": cfg["image"]}).encode(), "application/json")
         if p == "/settings/export":
@@ -572,9 +597,10 @@ class Admin(Base):
             n -= len(chunk)
 
     def do_PUT(self):
+        self._cookie = None
         self.path, _p0 = app_path(self.path); _ui.set_base(rel_base(_p0))
         u = urlparse(self.path); sid = self.session()
-        if u.path != "/images/upload" or not sid or not cfg["password_changed"] or not hmac.compare_digest(self.headers.get("X-CSRF", ""), sessions[sid]):
+        if u.path != "/images/upload" or not sid or not hmac.compare_digest(self.headers.get("X-CSRF", ""), sessions[sid]):
             self.close_connection = True; return self.send(403, b"forbidden", "text/plain", {"Connection": "close"})
         name = safe_image_name(parse_qs(u.query).get("name", [""])[0]); n = int(self.headers.get("Content-Length", 0))
         if not name:
@@ -599,27 +625,35 @@ class Admin(Base):
         self.send(200, b"ok", "text/plain")
 
     def do_POST(self):
+        self._cookie = None
         self.path, _p0 = app_path(self.path); _ui.set_base(rel_base(_p0))
         p = urlparse(self.path).path; f = self.form()
         if p == "/login":
+            if not pw_on(): return self.go("/")
             if check_pw(f.get("pw", ""), cfg["password"]):
                 sid = secrets.token_urlsafe(24); sessions[sid] = secrets.token_urlsafe(16)
                 return self.go("/", headers={"Set-Cookie": f"sid={sid}; HttpOnly; SameSite=Strict; Path=/"})
             time.sleep(1); return self.send(401, login_page("Wrong password"))
         sid = self.session()
-        if not sid or not hmac.compare_digest(f.get("csrf", ""), sessions[sid]): return self.go("/login")
-        if p == "/logout": sessions.pop(sid, None); return self.go("/login")
-        if p == "/password":
+        if not sid: return self.go("/login")
+        if not hmac.compare_digest(f.get("csrf", ""), sessions[sid]):
+            return self.go("/login") if pw_on() else self.go("/", "err", "That page expired. Please try again.")
+        if p == "/logout":
+            sessions.pop(sid, None); return self.go("/login" if pw_on() else "/")
+        if p == "/settings/password":
             err = None
-            if not check_pw(f.get("old", ""), cfg["password"]): err = "Current password is wrong"
+            if pw_on() and not check_pw(f.get("old", ""), cfg["password"]): err = "Current password is wrong"
             elif len(f.get("new", "")) < 8: err = "New password must be at least 8 characters"
-            elif f["new"] != f.get("new2"): err = "The new passwords do not match"
-            elif f["new"] == f["old"]: err = "New password must differ from the current one"
-            if err: return self.send(200, p_password(sid, None, ("err", err)))
-            cfg["password"] = hash_pw(f["new"]); cfg["password_changed"] = True; save(cfg)
-            for s in [s for s in sessions if s != sid]: sessions.pop(s)
-            return self.go("/guide" if not (cfg["image"] or cfg["rigs"]) else "/", "ok", "Password changed. Start here to set everything up.")
-        if not cfg["password_changed"]: return self.go("/password")
+            elif f.get("new") != f.get("new2"): err = "The new passwords do not match"
+            if err: return self.go("/settings", "err", err)
+            was = pw_on(); cfg["password"] = hash_pw(f["new"]); save(cfg)
+            for s_ in [s_ for s_ in sessions if s_ != sid]: sessions.pop(s_)
+            return self.go("/settings", "ok", "Password changed" if was else "Password set. It will be asked for the next time this page is opened.")
+        if p == "/settings/password/remove":
+            if not (pw_on() and check_pw(f.get("old", ""), cfg["password"])): return self.go("/settings", "err", "Current password is wrong")
+            cfg["password"] = ""; save(cfg)
+            for s_ in [s_ for s_ in sessions if s_ != sid]: sessions.pop(s_)
+            return self.go("/settings", "ok", "Password removed. Anyone on your network can open this page.")
         with lock:
             if p == "/ack": cfg["ack_static_ip"] = True; save(cfg); return self.go("/")
             if p == "/rigs/add":
@@ -716,6 +750,12 @@ def serve(handler, port):
 def main():
     global cfg
     cfg = load()
+    rf = os.path.join(DATA, "reset-password")
+    if os.path.exists(rf):
+        cfg["password"] = ""; save(cfg)
+        try: os.remove(rf)
+        except OSError: pass
+        print("password removed via reset-password file", flush=True)
     for r in cfg["rigs"].values():   # a rig left "flashing" across a restart is treated as failed
         if r.get("state") == "flashing" and not r.get("seen_ts"): r["state"] = "pending"
     threading.Thread(target=serve, args=(Public, PUBLIC_PORT), daemon=True).start()
