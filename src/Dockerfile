@@ -1,9 +1,9 @@
 FROM alpine:3.20
-ARG ALPINE_NETBOOT=3.20.3
+ARG ALPINE_NETBOOT=3.20.9
 RUN apk add --no-cache python3 dnsmasq curl iproute2 \
  && mkdir -p /srv/tftp /srv/netboot /data \
  && curl -fsSL -o /srv/tftp/undionly.kpxe https://boot.ipxe.org/undionly.kpxe \
- && curl -fsSL -o /srv/tftp/ipxe.efi      https://boot.ipxe.org/ipxe.efi \
+ && curl -fsSL -o /srv/tftp/ipxe.efi      https://boot.ipxe.org/x86_64-efi/ipxe.efi \
  && for f in vmlinuz-lts initramfs-lts modloop-lts; do \
       curl -fsSL -o /srv/netboot/$f https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/netboot-${ALPINE_NETBOOT}/$f; done \
  && apk del curl
